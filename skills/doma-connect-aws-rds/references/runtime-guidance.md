@@ -40,9 +40,15 @@ Map runtime permission to the selected mode:
 | Selected mode | Runtime permission contract |
 | --- | --- |
 | Direct IAM | `rds-db:connect` for the exact DB instance or cluster resource ID and case-sensitive database user |
-| Proxy IAM | `rds-db:connect` for the exact Proxy or backend database resource required by its inspected standard/end-to-end IAM contract |
+| Proxy IAM, client to Proxy | For both standard and end-to-end IAM, the application/runtime role has `rds-db:connect` on the Proxy DB-user ARN. Its resource segment uses the Proxy's `prx-*` resource ID and the exact case-sensitive database user, not the backend DB resource ID. |
+| Proxy IAM, standard backend | RDS Proxy connects to the database with the matching password from Secrets Manager. Inspect the Proxy service role's existing secret/KMS access; this leg does not use the application's `rds-db:connect` permission. |
+| Proxy IAM, end-to-end backend | RDS Proxy connects to the database with IAM. Inspect the Proxy service role's `rds-db:connect` permission on the backend DB instance or cluster DB-user ARN; do not substitute the application's role or the Proxy `prx-*` resource ID on this leg. |
 | Secrets Manager JDBC or application secret retrieval | Narrow `secretsmanager:DescribeSecret` and `secretsmanager:GetSecretValue` for the selected secret, plus KMS permission only when the secret's key contract requires it |
 | Runtime-delivered secret | Preserve the platform's existing delivery contract; do not add an SDK client when the runtime already supplies rotated credentials safely |
+
+Treat the two Proxy legs as separate identity checks. Inspect and report the
+existing application role, Proxy service role, authentication mode, and exact
+resource ARN. This skill does not create or change either role or policy.
 
 The read-only discovery workflow may inspect secret metadata with
 `DescribeSecret`, but it must never retrieve the value. A runtime library's
@@ -60,8 +66,13 @@ Keep these independent clocks separate:
   When Hikari remains in front of Proxy, set `maxLifetime` below 24 hours so the
   application retires connections first.
 - RDS Proxy's `IdleClientTimeout` is configurable and must be read from the
-  selected Proxy. Set the application pool's `idleTimeout` below that inspected
-  value so the application retires idle clients first.
+  selected Proxy. Hikari applies `idleTimeout` only when
+  `minimumIdle < maximumPoolSize`. For that elastic configuration, set
+  `idleTimeout` below the inspected Proxy value if the application must retire
+  idle clients first. A fixed-size configuration with
+  `minimumIdle >= maximumPoolSize`—including Hikari's default behavior—does not
+  retire idle connections through `idleTimeout`; choose pool size and this
+  relationship intentionally.
 - Hikari `connectionTimeout`, a driver login/connect/socket timeout, Proxy
   `ConnectionBorrowTimeout`, and Doma's statement query timeout guard different
   waits. Configure each deliberately; none substitutes for another.
@@ -190,6 +201,8 @@ completed verification gates, and first failure. Redact all secret material.
 - [IAM roles for EKS service accounts](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html)
 - [Lambda execution role](https://docs.aws.amazon.com/lambda/latest/dg/lambda-intro-execution-role.html)
 - [Lambda with RDS](https://docs.aws.amazon.com/lambda/latest/dg/services-rds.html)
+- [Connecting to RDS Proxy with standard or end-to-end IAM](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy-connecting.html)
+- [Configuring RDS Proxy IAM authentication](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy-iam-setup.html)
 - [RDS Proxy connection considerations](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy-connections.html)
 - [IAM database authentication connections](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.IAMDBAuth.Connecting.html)
 - [RDS certificate authority rotation](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL-certificate-rotation.html)

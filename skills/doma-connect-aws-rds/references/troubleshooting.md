@@ -138,7 +138,14 @@ Verify all of these facts without printing the token:
 - IAM database authentication is enabled on the direct target, or the selected
   Proxy's authentication metadata explicitly supports the chosen client flow.
 - The exact case-sensitive database user already exists and is IAM-enabled.
-- The runtime identity has `rds-db:connect` on the exact resource ID/user ARN.
+- For direct IAM, the runtime identity has `rds-db:connect` on the backend DB
+  instance or cluster DB-user ARN. For Proxy IAM, the application/runtime role
+  instead targets the Proxy DB-user ARN with its `prx-*` resource ID for the
+  client-to-Proxy leg.
+- For standard Proxy IAM, confirm that the Proxy service role reads the matching
+  Secrets Manager password. For end-to-end Proxy IAM, confirm that the Proxy
+  service role has `rds-db:connect` on the backend DB instance or cluster
+  DB-user ARN. Do not confuse either backend contract with the application role.
 - Token generation uses the real target endpoint, port, confirmed region, and
   exact database user—not a custom DNS alias.
 - The physical `DataSource` generates a new token when it opens each physical
@@ -178,10 +185,14 @@ other. IAM-authenticated Proxy clients require TLS.
 ## Pool and wrapper checks
 
 For Hikari behind Proxy, verify `maxLifetime` is below the non-configurable
-24-hour Proxy client maximum and `idleTimeout` is below the inspected
-`IdleClientTimeout`. Check that the pool opens physical connections through the
-token-refreshing source. Do not rotate a Hikari password field on a timer and
-call that per-connection IAM authentication.
+24-hour Proxy client maximum. If `minimumIdle < maximumPoolSize`, verify
+`idleTimeout` is below the inspected `IdleClientTimeout` when the application is
+intended to retire idle clients first. If
+`minimumIdle >= maximumPoolSize`, including Hikari's default behavior,
+`idleTimeout` does not retire idle connections; confirm that the fixed-size
+choice is intentional. Check that the pool opens physical connections through
+the token-refreshing source. Do not rotate a Hikari password field on a timer
+and call that per-connection IAM authentication.
 
 For the AWS Advanced JDBC Wrapper, verify the wrapper, base driver, JDK, pool,
 engine, and endpoint together. Direct compatible Aurora or RDS Multi-AZ cluster
@@ -230,6 +241,6 @@ or fabricated successful gate.
 - [RDS IAM database authentication troubleshooting](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.IAMDBAuth.Troubleshooting.html)
 - [RDS SSL/TLS certificates](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html)
 - [RDS Proxy troubleshooting](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.troubleshooting.html)
-- [AWS Advanced JDBC Wrapper troubleshooting](https://github.com/aws/aws-advanced-jdbc-wrapper/blob/4.3.0/docs/using-the-jdbc-driver/Troubleshooting.md)
+- [AWS Advanced JDBC Wrapper compatibility](https://github.com/aws/aws-advanced-jdbc-wrapper/blob/4.3.0/docs/using-the-jdbc-driver/Compatibility.md)
 - [Doma 3.14.0 configuration](https://docs.domaframework.org/en/3.14.0/config/)
 - [Doma 3.14.0 FAQ](https://docs.domaframework.org/en/3.14.0/faq/)

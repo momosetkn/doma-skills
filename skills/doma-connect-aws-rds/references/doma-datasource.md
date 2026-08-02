@@ -33,19 +33,21 @@ do not raise its JDK or replace an established pool merely to copy this example.
 
 Every supported build needs one aligned Doma runtime/processor pair. Add one
 engine driver, one pool only when the project does not already have one, and
-only the selected authentication or topology integration:
+only the selected authentication or topology integration. These primary-source
+pins and runtime notes were checked on 2026-08-02; compatible versions already
+selected by the project take precedence:
 
-| Concern | Coordinate and released example | Add when |
-| --- | --- | --- |
-| Java Doma | `org.seasar.doma:doma-core:3.14.0`, `org.seasar.doma:doma-processor:3.14.0` | Java Gradle or Maven; processor stays off the runtime classpath |
-| Kotlin Doma | `org.seasar.doma:doma-kotlin:3.14.0`, `org.seasar.doma:doma-processor:3.14.0` | Kotlin/JVM Gradle Kotlin DSL; put the processor on `kapt` |
-| PostgreSQL | `org.postgresql:postgresql:42.7.13` | PostgreSQL or Aurora PostgreSQL |
-| MySQL | `com.mysql:mysql-connector-j:26.7.0` | MySQL 8 or Aurora MySQL compatible with this driver |
-| HikariCP | `com.zaxxer:HikariCP:7.1.0` | Only when retaining or intentionally introducing Hikari on Java 11+ |
-| AWS SDK 2.x | BOM `software.amazon.awssdk:bom:2.50.2`, modules `software.amazon.awssdk:rds` and `software.amazon.awssdk:auth` | Direct or Proxy IAM token generation |
-| Secrets Manager JDBC | `com.amazonaws.secretsmanager:aws-secretsmanager-jdbc:2.1.3` | Selected secret-aware JDBC integration; also keep its underlying engine driver |
-| Secrets Manager cache | `com.amazonaws.secretsmanager:aws-secretsmanager-caching-java:2.2.0` | Only when the existing design explicitly uses the standalone cache |
-| AWS Advanced JDBC Wrapper | `software.amazon.jdbc:aws-advanced-jdbc-wrapper:4.3.0` | Selected compatible wrapper mode; also keep the underlying engine driver |
+| Concern | Coordinate and released example | Primary pin/runtime evidence | Add when |
+| --- | --- | --- | --- |
+| Java Doma | `org.seasar.doma:doma-core:3.14.0`, `org.seasar.doma:doma-processor:3.14.0` | [Doma 3.14.0 documentation](https://docs.domaframework.org/en/3.14.0/) | Java Gradle or Maven; processor stays off the runtime classpath |
+| Kotlin Doma | `org.seasar.doma:doma-kotlin:3.14.0`, `org.seasar.doma:doma-processor:3.14.0` | [Doma 3.14.0 Kotlin support](https://docs.domaframework.org/en/3.14.0/kotlin-support/) | Kotlin/JVM Gradle Kotlin DSL; put the processor on `kapt` |
+| PostgreSQL | `org.postgresql:postgresql:42.7.13` | [Maven Central release metadata](https://repo.maven.apache.org/maven2/org/postgresql/postgresql/maven-metadata.xml); [42.7.13 supported PostgreSQL and Java versions](https://github.com/pgjdbc/pgjdbc/blob/REL42.7.13/README.md#supported-postgresql-and-java-versions) | PostgreSQL or Aurora PostgreSQL |
+| MySQL | `com.mysql:mysql-connector-j:26.7.0` | [Maven Central release metadata](https://repo.maven.apache.org/maven2/com/mysql/mysql-connector-j/maven-metadata.xml); [immutable 26.7.0 POM](https://repo.maven.apache.org/maven2/com/mysql/mysql-connector-j/26.7.0/mysql-connector-j-26.7.0.pom); [official Java compatibility guide](https://dev.mysql.com/doc/connector-j/en/connector-j-versions.html) | MySQL 8 or Aurora MySQL compatible with this driver |
+| HikariCP | `com.zaxxer:HikariCP:7.1.0`; deprecated Java 8 line `4.0.3` | [Maven Central release metadata](https://repo.maven.apache.org/maven2/com/zaxxer/HikariCP/maven-metadata.xml); [7.1.0 Java 11+ and 4.0.3 Java 8 artifact guidance](https://github.com/brettwooldridge/HikariCP/blob/HikariCP-7.1.0/README.md#artifacts); immutable POMs for [7.1.0](https://repo.maven.apache.org/maven2/com/zaxxer/HikariCP/7.1.0/HikariCP-7.1.0.pom) and [4.0.3](https://repo.maven.apache.org/maven2/com/zaxxer/HikariCP/4.0.3/HikariCP-4.0.3.pom) | Retaining or intentionally introducing Hikari; use `7.1.0` on Java 11+ or deprecated `4.0.3` only when the project remains on Java 8 |
+| AWS SDK 2.x | BOM `software.amazon.awssdk:bom:2.50.2`, modules `software.amazon.awssdk:rds` and `software.amazon.awssdk:auth` | [BOM release metadata](https://repo.maven.apache.org/maven2/software/amazon/awssdk/bom/maven-metadata.xml); immutable 2.50.2 POMs for [BOM](https://repo.maven.apache.org/maven2/software/amazon/awssdk/bom/2.50.2/bom-2.50.2.pom), [RDS](https://repo.maven.apache.org/maven2/software/amazon/awssdk/rds/2.50.2/rds-2.50.2.pom), and [auth](https://repo.maven.apache.org/maven2/software/amazon/awssdk/auth/2.50.2/auth-2.50.2.pom); [2.50.2 minimum requirements](https://github.com/aws/aws-sdk-java-v2/blob/2.50.2/README.md#minimum-requirements) | Direct or Proxy IAM token generation |
+| Secrets Manager JDBC | `com.amazonaws.secretsmanager:aws-secretsmanager-jdbc:2.1.3` | [Maven Central release metadata](https://repo.maven.apache.org/maven2/com/amazonaws/secretsmanager/aws-secretsmanager-jdbc/maven-metadata.xml); [official 2.1.3 release](https://github.com/aws/aws-secretsmanager-jdbc/releases/tag/2.1.3); [immutable 2.1.3 POM](https://repo.maven.apache.org/maven2/com/amazonaws/secretsmanager/aws-secretsmanager-jdbc/2.1.3/aws-secretsmanager-jdbc-2.1.3.pom) | Selected secret-aware JDBC integration; also keep its underlying engine driver |
+| Secrets Manager cache | `com.amazonaws.secretsmanager:aws-secretsmanager-caching-java:2.2.0` | [Maven Central release metadata](https://repo.maven.apache.org/maven2/com/amazonaws/secretsmanager/aws-secretsmanager-caching-java/maven-metadata.xml); [official 2.2.0 release](https://github.com/aws/aws-secretsmanager-caching-java/releases/tag/2.2.0); [2.2.0 prerequisites](https://github.com/aws/aws-secretsmanager-caching-java/blob/2.2.0/README.md#required-prerequisites); [immutable 2.2.0 POM](https://repo.maven.apache.org/maven2/com/amazonaws/secretsmanager/aws-secretsmanager-caching-java/2.2.0/aws-secretsmanager-caching-java-2.2.0.pom) | Only when the existing design explicitly uses the standalone cache |
+| AWS Advanced JDBC Wrapper | `software.amazon.jdbc:aws-advanced-jdbc-wrapper:4.3.0` | [Maven Central release metadata](https://repo.maven.apache.org/maven2/software/amazon/jdbc/aws-advanced-jdbc-wrapper/maven-metadata.xml); [4.3.0 minimum requirements](https://github.com/aws/aws-advanced-jdbc-wrapper/blob/4.3.0/docs/GettingStarted.md#minimum-requirements); [immutable 4.3.0 POM](https://repo.maven.apache.org/maven2/software/amazon/jdbc/aws-advanced-jdbc-wrapper/4.3.0/aws-advanced-jdbc-wrapper-4.3.0.pom) | Selected compatible wrapper mode; also keep the underlying engine driver |
 
 The AWS SDK BOM is dependency management, not a runtime jar. Keep all selected
 SDK modules aligned through it. Add `software.amazon.awssdk:sts` at that BOM
@@ -235,8 +237,13 @@ permission. Verify rotation and pool-refresh behavior before claiming rotation
 support.
 
 For Proxy, also set pool `maxLifetime` below the non-configurable 24-hour Proxy
-client-connection limit and pool `idleTimeout` below the inspected
-`IdleClientTimeout`. Do not copy arbitrary values and do not infer that Proxy
+client-connection limit. Hikari applies `idleTimeout` only when
+`minimumIdle < maximumPoolSize`; only in that elastic configuration can a pool
+`idleTimeout` below the inspected Proxy `IdleClientTimeout` make the application
+retire idle clients first. A fixed-size configuration with
+`minimumIdle >= maximumPoolSize`, including Hikari's default behavior, does not
+retire idle connections through `idleTimeout`. Choose pool size and lifetime
+settings deliberately; do not copy arbitrary values or infer that Proxy
 eliminates the application pool.
 
 ### Secrets Manager JDBC integration
@@ -394,36 +401,58 @@ class IamTokenPostgresDataSource(
 ```
 
 Initialize the Kotlin resources once per runtime and let the pool call the
-token-producing source for each new physical connection. Keep the credential
-provider reachable until the pool is closed:
+token-producing source for each new physical connection. Keep the returned
+application-owned holder reachable for the runtime lifetime and close it at
+shutdown; it exposes the Doma config while retaining both closeable resources:
 
 ```kotlin
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.seasar.doma.jdbc.dialect.PostgresDialect
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.rds.RdsUtilities
 
-object KotlinIamConnectionFactory {
-    fun create(
-        endpoint: String,
-        port: Int,
-        databaseName: String,
-        databaseUser: String,
-        region: String,
-    ): AwsRdsConfig {
-        val credentials = DefaultCredentialsProvider.builder().build()
-        val utilities = RdsUtilities.builder()
-            .region(Region.of(region))
-            .credentialsProvider(credentials)
-            .build()
-        val physical = IamTokenPostgresDataSource(
-            utilities, endpoint, port, databaseName, databaseUser)
-        val hikari = HikariConfig()
-        hikari.dataSource = physical
-        val pool = HikariDataSource(hikari)
-        return AwsRdsConfig(pool, PostgresDialect())
+class KotlinIamConnectionResources private constructor(
+    val config: AwsRdsConfig,
+    private val pool: HikariDataSource,
+    private val credentials: DefaultCredentialsProvider,
+) : AutoCloseable {
+    override fun close() {
+        try {
+            pool.close()
+        } finally {
+            credentials.close()
+        }
+    }
+
+    companion object {
+        fun create(
+            endpoint: String,
+            port: Int,
+            databaseName: String,
+            databaseUser: String,
+            region: String,
+        ): KotlinIamConnectionResources {
+            val credentials = DefaultCredentialsProvider.builder().build()
+            val pool = HikariDataSource()
+            try {
+                val utilities = RdsUtilities.builder()
+                    .region(Region.of(region))
+                    .credentialsProvider(credentials)
+                    .build()
+                pool.dataSource = IamTokenPostgresDataSource(
+                    utilities, endpoint, port, databaseName, databaseUser)
+                val config = AwsRdsConfig(pool, PostgresDialect())
+                return KotlinIamConnectionResources(config, pool, credentials)
+            } catch (failure: Throwable) {
+                try {
+                    pool.close()
+                } finally {
+                    credentials.close()
+                }
+                throw failure
+            }
+        }
     }
 }
 ```
@@ -606,4 +635,4 @@ five-second statement timeout. Do not add a write statement.
 - [Doma `SqlLogType`](https://github.com/domaframework/doma/blob/3.14.0/doma-core/src/main/java/org/seasar/doma/jdbc/SqlLogType.java)
 - [AWS SDK for Java 2.x IAM token example](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/example_rds_GenerateRDSAuthToken_section.html)
 - [AWS Secrets Manager JDBC library](https://github.com/aws/aws-secretsmanager-jdbc/tree/2.1.3)
-- [AWS Advanced JDBC Wrapper DataSource](https://github.com/aws/aws-advanced-jdbc-wrapper/blob/4.3.0/docs/using-the-jdbc-driver/UsingTheDataSource.md)
+- [AWS Advanced JDBC Wrapper DataSource](https://github.com/aws/aws-advanced-jdbc-wrapper/blob/4.3.0/docs/using-the-jdbc-driver/DataSource.md)
