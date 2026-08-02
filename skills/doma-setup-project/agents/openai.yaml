@@ -1,0 +1,4 @@
+interface:
+  display_name: "Doma Project Setup"
+  short_description: "Set up Doma in a plain Java project"
+  default_prompt: "Use $doma-setup-project to configure Doma in this plain Java project and verify annotation processing."
