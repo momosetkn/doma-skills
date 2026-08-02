@@ -14,7 +14,7 @@ while (($#)); do
       option=$1
       (($# >= 2)) || { printf 'missing value for %s\n' "$option" >&2; exit 64; }
       case "$2" in
-        ''|--expected-account|--region|--target-kind|--target-id|--profile|--secret-id)
+        ''|--*)
           printf 'missing value for %s\n' "$option" >&2
           exit 64
           ;;

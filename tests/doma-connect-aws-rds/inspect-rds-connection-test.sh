@@ -269,6 +269,20 @@ test_option_tokens_are_not_consumed_as_values() {
 CASES
 }
 
+test_unknown_option_looking_values_are_rejected() {
+  local option
+  for option in --target-id --expected-account --region --target-kind --profile --secret-id; do
+    capture_inspector aurora-postgresql \
+      --expected-account 111122223333 --region ap-northeast-1 \
+      --target-kind cluster --target-id app-aurora-pg \
+      "$option" --write-anything
+    assert_status 64 || return 1
+    assert_contains "$stderr_file" "missing value for $option" || return 1
+    assert_empty "$stdout_file" || return 1
+    assert_empty "$call_log" || return 1
+  done
+}
+
 test_empty_option_values_are_rejected() {
   local option
   for option in --expected-account --region --target-kind --target-id --profile --secret-id; do
@@ -307,5 +321,6 @@ run_test 'secret inspection is metadata-only and propagates profile' test_secret
 run_test 'unknown argument makes no AWS call' test_unknown_argument_makes_no_aws_call
 run_test 'empty option values are rejected' test_empty_option_values_are_rejected
 run_test 'option tokens are rejected as missing values' test_option_tokens_are_not_consumed_as_values
+run_test 'unknown option-looking values are rejected' test_unknown_option_looking_values_are_rejected
 run_test 'not-found cluster exits 66 after identity' test_not_found_cluster_exits_66_after_identity
 printf '1..%s\n' "$tests_run"
