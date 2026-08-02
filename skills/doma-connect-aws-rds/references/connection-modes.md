@@ -9,7 +9,7 @@ Choose from inspected project, runtime, engine, endpoint, Proxy authentication, 
 | RDS Proxy + secret-backed database auth | Bursty clients or shared connection management | VPC reachability, Proxy pool/client lifetime, pinning |
 | RDS Proxy + IAM client auth | Runtime identity should authenticate to Proxy | Standard versus end-to-end IAM, exact `rds-db:connect` resource |
 | AWS Advanced JDBC Wrapper direct | Aurora or supported Multi-AZ topology-aware failover/auth plugins are needed | Current engine/plugin compatibility and base driver |
-| AWS Wrapper with RDS Proxy | A currently documented authentication-only use case requires it | Do not enable incompatible failover, host monitoring, or read/write splitting |
+| AWS Wrapper with RDS Proxy | A documented authentication workflow or Simple R/W Splitting use case requires it | Verify a compatible wrapper release; do not enable topology failover, host monitoring, or topology-dependent Read/Write Splitting |
 
 ## Decide in order
 
@@ -50,7 +50,9 @@ When the application retains its own pool in front of Proxy, keep its maximum co
 
 Use topology-aware wrapper behavior only for direct Aurora or currently supported RDS Multi-AZ DB clusters. Verify the inspected engine, project JDK, wrapper release, underlying PostgreSQL/MySQL driver, pool, and selected plugins together. The current wrapper uses `failover2` for Failover Plugin v2 and enables it by default when `wrapperPlugins` is absent; do not assume transaction replay or measured failover timing.
 
-RDS Proxy owns target routing. Behind Proxy, disable topology-dependent `failover`/`failover2`, enhanced host monitoring (`efm`/`efm2`), and topology read/write splitting. Use the wrapper with Proxy only when current AWS documentation supports the specific authentication-only use case; otherwise use the base driver directly.
+RDS Proxy owns topology target routing. Behind Proxy, disable `failover`/`failover2`, Enhanced Host Monitoring (`efm`/`efm2`), and topology-dependent Read/Write Splitting. Authentication workflows remain supported when their plugin and credentials match the inspected Proxy contract.
+
+The **Simple R/W Splitting Plugin** is supported with RDS Proxy starting with wrapper 3.0.0 according to the [official RDS Proxy compatibility section](https://github.com/aws/aws-advanced-jdbc-wrapper#rds-proxy). Allow it only after verifying that the project uses a compatible wrapper release and the Simple plugin rather than topology-dependent Read/Write Splitting. Otherwise, use the base driver or another currently documented compatible wrapper configuration.
 
 ## Official references
 

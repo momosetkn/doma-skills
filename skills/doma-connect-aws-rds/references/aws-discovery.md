@@ -5,6 +5,7 @@ Confirm identity first, then inspect only an explicitly selected existing target
 ## Contents
 
 - [Inspection interface](#inspection-interface)
+- [Supported engine gate](#supported-engine-gate)
 - [Approved operations](#approved-operations)
 - [Manual fallback](#manual-fallback)
 - [Safe result contract](#safe-result-contract)
@@ -25,6 +26,19 @@ scripts/inspect-rds-connection.sh \
 ```
 
 `--expected-account`, `--region`, `--target-kind`, and `--target-id` are mandatory. `--profile` and `--secret-id` are optional. Accept only the documented target kinds for an exact DB instance, DB cluster, or RDS Proxy. Fail before any resource describe call when required targeting input is absent or `sts get-caller-identity` does not match the expected account.
+
+## Supported engine gate
+
+Proceed only when the resolved RDS `Engine` value is exactly one of:
+
+- `aurora-postgresql`
+- `postgres`
+- `aurora-mysql`
+- `mysql`
+
+Stop before connection-mode selection, dependency guidance, or code changes for every other engine, including MariaDB, Oracle, and SQL Server.
+
+For an RDS Proxy, require its `EngineFamily` to be PostgreSQL or MySQL and resolve every selected Proxy target through narrowly targeted DB instance or cluster describes. Each resolved target must have one of the four allowed `Engine` values above. Stop if the Proxy family is unsupported, a target cannot be resolved, targets disagree, or any target uses another engine; do not infer support from the Proxy endpoint or name.
 
 ## Approved operations
 

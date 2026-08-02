@@ -9,7 +9,7 @@ description: Use when connecting or repairing an existing plain Java or Kotlin D
 
 Confirm that Doma annotation processing already works and the existing project compiles far enough to generate its Doma classes. If initial setup fails, stop and use the `doma-setup-project` or `doma-setup-kotlin-project` concern when available, then return here after annotation processing succeeds. Do not require either setup skill as a filesystem dependency.
 
-Apply this workflow only to an existing plain Java or Kotlin application and an existing RDS, Aurora, or RDS Proxy target. Inspect facts; do not invent project files, AWS resources, identifiers, versions, authentication state, or successful verification.
+Apply this workflow only to an existing supported project and an existing RDS, Aurora, or RDS Proxy target. Supported project shapes are Java with Gradle or Maven, and Kotlin/JVM with Gradle Kotlin DSL. Stop and route every other language/build combination—including Kotlin with Maven or Gradle Groovy DSL—without changing files. Inspect facts; do not invent project files, AWS resources, identifiers, versions, authentication state, or successful verification.
 
 ## Ordered workflow
 
