@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up a Kotlin Doma Project"
+  short_description: "Configure Doma with KAPT in Kotlin Gradle projects"
+  default_prompt: "Use $doma-setup-kotlin-project to add Doma and KAPT to this plain Kotlin Gradle project and verify DAO generation."

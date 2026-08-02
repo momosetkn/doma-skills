@@ -16,12 +16,30 @@ It covers Java 17-or-later build wiring, matching `doma-core` and `doma-processo
 
 It excludes Spring Boot, Quarkus, other framework integrations, Kotlin with KAPT or KSP, advanced DAO and two-way SQL design, Criteria API, transactions, and database migrations.
 
+### `doma-setup-kotlin-project`
+
+Use this skill when:
+
+- adding Doma and KAPT to a plain Kotlin/JVM Gradle Kotlin DSL project;
+- creating the first Kotlin DAO that proves annotation processing works; or
+- diagnosing why KAPT produced no generated DAO implementation.
+
+It covers JDK 17-or-later setup, aligned `doma-kotlin` and `doma-processor`
+dependencies, an inline-SQL top-level DAO probe, a clean Gradle build,
+recursive generated-source inspection, and initial setup diagnostics.
+
+It excludes Maven, Java-only setup, Spring Boot, Quarkus, other framework
+integrations, KSP configuration, external SQL resources, entity/domain/embeddable
+design, Criteria API and KQueryDsl, transactions, migrations, and broad
+database-dialect guidance.
+
 ## Installation
 
 ```bash
 npx skills add momosetkn/doma-skills --list
 npx skills add momosetkn/doma-skills
 npx skills add momosetkn/doma-skills --skill doma-setup-project
+npx skills add momosetkn/doma-skills --skill doma-setup-kotlin-project
 ```
 
 ## Usage
@@ -32,6 +50,10 @@ Use $doma-setup-project to add Doma to this plain Java Gradle project and verify
 
 ```text
 Use $doma-setup-project to diagnose why this Maven build creates no generated DAO implementation.
+```
+
+```text
+Use $doma-setup-kotlin-project to add Doma and KAPT to this Kotlin/JVM Gradle project and verify DAO generation.
 ```
 
 ## Doma Baseline
