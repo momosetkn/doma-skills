@@ -1,0 +1,4 @@
+interface:
+  display_name: "Connect Doma to AWS RDS"
+  short_description: "Connect Java and Kotlin Doma apps to RDS and Aurora"
+  default_prompt: "Use $doma-connect-aws-rds to inspect this existing AWS database connection and configure the Doma DataSource safely."
