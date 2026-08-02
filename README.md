@@ -33,6 +33,14 @@ integrations, KSP configuration, external SQL resources, entity/domain/embeddabl
 design, Criteria API and KQueryDsl, transactions, migrations, and broad
 database-dialect guidance.
 
+### `doma-connect-aws-rds`
+
+Use this skill when an existing plain Java or Kotlin Doma application must connect to, or repair a connection to, an existing Amazon RDS PostgreSQL, Aurora PostgreSQL, RDS MySQL, or Aurora MySQL target.
+
+It covers Direct JDBC, IAM database authentication, Secrets Manager integration, existing RDS Proxy connections, the AWS Advanced JDBC Wrapper, Doma dialect and `DataSource` selection, layered connection verification, and narrowly targeted read-only AWS discovery.
+
+AWS inspection is read-only and never retrieves or prints a secret value. The skill does not provision or mutate cloud resources. It excludes framework wiring and transactions, deployment, schema migrations, entity or business-DAO design, and slow-query or index tuning.
+
 ## Installation
 
 ```bash
@@ -40,6 +48,7 @@ npx skills add momosetkn/doma-skills --list
 npx skills add momosetkn/doma-skills
 npx skills add momosetkn/doma-skills --skill doma-setup-project
 npx skills add momosetkn/doma-skills --skill doma-setup-kotlin-project
+npx skills add momosetkn/doma-skills --skill doma-connect-aws-rds
 ```
 
 ## Usage
@@ -54,6 +63,10 @@ Use $doma-setup-project to diagnose why this Maven build creates no generated DA
 
 ```text
 Use $doma-setup-kotlin-project to add Doma and KAPT to this Kotlin/JVM Gradle project and verify DAO generation.
+```
+
+```text
+Use $doma-connect-aws-rds to inspect the existing Aurora PostgreSQL target in ap-northeast-1 and connect this Kotlin Doma Lambda through its existing RDS Proxy with IAM authentication.
 ```
 
 ## Doma Baseline

@@ -40,3 +40,11 @@ Never expose or log a password, secret value, IAM token, access key, credential-
 ## Scope boundary
 
 Refuse resource provisioning or mutation, deployment, IAM or database-user changes, security-group changes, secret retrieval, and production failover. Route SQL tuning/index work, framework-specific dependency injection or transactions, schema migrations, entity design, and initial Doma setup to their respective concerns. Doma does not create or apply schema migrations as part of this connection workflow.
+
+For a request that is exclusively outside this boundary, respond with exactly these three parts and then end the response:
+
+1. **Scope:** state that the requested work is excluded from this connection skill.
+2. **Route:** name the dedicated concern. Route slow-query, `EXPLAIN ANALYZE`, and index work to a future Doma database-performance concern and state that no corresponding skill exists in the current catalog. Route Spring Boot wiring to framework integration and migrations to the project's migration-tool workflow.
+3. **Stop:** state that no project, database, or cloud action was taken.
+
+Do not inspect the project, provide implementation or mutation commands, request inputs for the excluded work, or offer to perform it under this skill.
