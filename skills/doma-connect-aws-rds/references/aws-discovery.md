@@ -27,12 +27,20 @@ scripts/inspect-rds-connection.sh \
 
 `--expected-account`, `--region`, `--target-kind`, and `--target-id` are mandatory. `--profile` and `--secret-id` are optional. Accept only the documented target kinds for an exact DB instance, DB cluster, or RDS Proxy. Fail before any resource describe call when required targeting input is absent or `sts get-caller-identity` does not match the expected account.
 
+Use a lowercase AWS region made of nonempty alphanumeric segments separated by
+single hyphens. Use a 1-63 character instance, cluster, or Proxy identifier that
+starts with a letter, contains only letters, digits, and hyphens, and has no
+trailing or consecutive hyphen. The inspector validates these inputs before it
+calls AWS. It requires Bash and the AWS CLI; it does not require `jq`, Python,
+or another JSON parser.
+
 The script emits one JSON record per inspected concern and uses these exit categories:
 
 - `0`: identity matched and every requested inspection completed.
 - `64`: an argument is missing, malformed, or unknown; no AWS call is made.
 - `65`: the caller account differs from `--expected-account`; only the identity call is made.
 - `66`: the selected DB instance, DB cluster, or RDS Proxy is not found after identity confirmation.
+- `67`: Proxy target metadata is unsupported, absent, unresolvable, inconsistent, or resolves to an unsupported engine.
 - Other nonzero statuses: the AWS CLI or another required local command failed; stop at that failure and do not broaden the inspection.
 
 ## Supported engine gate
@@ -46,7 +54,18 @@ Proceed only when the resolved RDS `Engine` value is exactly one of:
 
 Stop before connection-mode selection, dependency guidance, or code changes for every other engine, including MariaDB, Oracle, and SQL Server.
 
-For an RDS Proxy, require its `EngineFamily` to be PostgreSQL or MySQL and resolve every selected Proxy target through narrowly targeted DB instance or cluster describes. Each resolved target must have one of the four allowed `Engine` values above. Stop if the Proxy family is unsupported, a target cannot be resolved, targets disagree, or any target uses another engine; do not infer support from the Proxy endpoint or name.
+For an RDS Proxy, require its `EngineFamily` to be PostgreSQL or MySQL and
+resolve every selected Proxy target through narrowly targeted DB instance or
+cluster describes. Resolve `TRACKED_CLUSTER` through its `TrackedClusterId`.
+Resolve `RDS_INSTANCE` through its exact `TargetArn`, which
+`describe-db-instances` accepts as its identifier. Retain `RdsResourceId` as
+reported target metadata, but do not assume it is the immutable `DbiResourceId`;
+the service documents it as the target identifier. Treat
+`RDS_SERVERLESS_ENDPOINT` and any unknown type as unsupported in this workflow.
+Each resolved target must have one of the four allowed `Engine` values above.
+Stop if a target cannot be resolved, resolved targets have different `Engine`
+values, or any target uses another engine; do not infer support from the Proxy
+endpoint, name, or `EngineFamily` alone.
 
 ## Approved operations
 
@@ -80,7 +99,7 @@ For an exact Aurora or RDS Multi-AZ cluster:
 ```bash
 aws --profile workloads-dev --region ap-northeast-1 rds describe-db-clusters \
   --db-cluster-identifier app-aurora-pg \
-  --query 'DBClusters[0].{identifier:DBClusterIdentifier,resource_id:DbClusterResourceId,engine:Engine,endpoint:Endpoint,port:Port,iam_auth:IAMDatabaseAuthenticationEnabled,security_group_ids:VpcSecurityGroups[].VpcSecurityGroupId}' \
+  --query 'DBClusters[0].{identifier:DBClusterIdentifier,resource_id:DbClusterResourceId,engine:Engine,engine_version:EngineVersion,endpoint:Endpoint,reader_endpoint:ReaderEndpoint,port:Port,iam_auth:IAMDatabaseAuthenticationEnabled,subnet_group:DBSubnetGroup,security_group_ids:VpcSecurityGroups[].VpcSecurityGroupId}' \
   --output json --no-cli-pager
 ```
 
@@ -98,14 +117,38 @@ For an exact Proxy, inspect the client endpoint and authentication contract, the
 ```bash
 aws --profile workloads-dev --region ap-northeast-1 rds describe-db-proxies \
   --db-proxy-name app-proxy \
-  --query 'DBProxies[0].{name:DBProxyName,arn:DBProxyArn,endpoint:Endpoint,engine_family:EngineFamily,require_tls:RequireTLS,idle_client_timeout:IdleClientTimeout,default_auth_scheme:DefaultAuthScheme,auth:Auth[].{iam_auth:IAMAuth,secret_arn:SecretArn}}' \
+  --query 'DBProxies[0].{name:DBProxyName,arn:DBProxyArn,endpoint:Endpoint,engine_family:EngineFamily,require_tls:RequireTLS,idle_client_timeout:IdleClientTimeout,default_auth_scheme:DefaultAuthScheme,role_arn:RoleArn,vpc_id:VpcId,subnet_ids:VpcSubnetIds,security_group_ids:VpcSecurityGroupIds,auth:Auth[].{auth_scheme:AuthScheme,username:UserName,client_password_auth_type:ClientPasswordAuthType,iam_auth:IAMAuth,secret_arn:SecretArn}}' \
   --output json --no-cli-pager
 
 aws --profile workloads-dev --region ap-northeast-1 rds describe-db-proxy-targets \
   --db-proxy-name app-proxy \
-  --query 'Targets[].{type:Type,resource_id:RdsResourceId,endpoint:Endpoint,port:Port,target_health:TargetHealth.State}' \
+  --query 'Targets[].{type:Type,resource_id:RdsResourceId,target_arn:TargetArn,tracked_cluster_id:TrackedClusterId,endpoint:Endpoint,port:Port,role:Role,target_health:TargetHealth.State}' \
   --output json --no-cli-pager
 ```
+
+Then resolve every returned target without enumerating the account. For a
+`TRACKED_CLUSTER`, use its exact nonblank `TrackedClusterId`:
+
+```bash
+aws --profile workloads-dev --region ap-northeast-1 rds describe-db-clusters \
+  --db-cluster-identifier app-aurora-pg \
+  --query 'DBClusters[0].{identifier:DBClusterIdentifier,resource_id:DbClusterResourceId,engine:Engine,engine_version:EngineVersion,endpoint:Endpoint,port:Port,iam_auth:IAMDatabaseAuthenticationEnabled}' \
+  --output json --no-cli-pager
+```
+
+For an `RDS_INSTANCE`, use its exact `TargetArn`:
+
+```bash
+aws --profile workloads-dev --region ap-northeast-1 rds describe-db-instances \
+  --db-instance-identifier arn:aws:rds:ap-northeast-1:111122223333:db:app-rds-pg \
+  --query 'DBInstances[0].{identifier:DBInstanceIdentifier,resource_id:DbiResourceId,engine:Engine,engine_version:EngineVersion,endpoint:Endpoint.Address,port:Endpoint.Port,iam_auth:IAMDatabaseAuthenticationEnabled}' \
+  --output json --no-cli-pager
+```
+
+Require exactly one resolved resource for each target. Stop nonzero before
+reporting Proxy inspection success if a target type is unsupported, a lookup
+returns no resource, resolved engines differ, or an engine is outside the
+four-engine allowlist.
 
 For Proxy IAM policy analysis, use the `prx-...` resource ID contained in the selected Proxy ARN; do not mistake the full ARN or the friendly Proxy name for that resource ID.
 
@@ -122,7 +165,14 @@ Use targeted EC2 describes only after the selected RDS response names the VPC, s
 
 ## Safe result contract
 
-Report the confirmed account and region, exact target identifier and kind, engine family/version, endpoint/port, IAM-authentication flag, Proxy auth/target metadata when applicable, referenced network IDs, and non-value secret metadata. Redact error text that could contain credentials. Never report a password, secret value, IAM token, access key, credential-bearing URL, environment-file contents, or unrequested account inventory.
+Report the confirmed account and region, exact target identifier and kind,
+immutable resource ID, engine family/version, endpoint/port,
+IAM-authentication flag, Proxy ARN/default authentication/timeout/VPC/auth and
+raw plus resolved target metadata when applicable, referenced network IDs, and
+non-value secret metadata. Redact error text that could contain credentials.
+Never report a password, secret value, IAM token, access key,
+credential-bearing URL, environment-file contents, or unrequested account
+inventory.
 
 ## Official CLI references
 

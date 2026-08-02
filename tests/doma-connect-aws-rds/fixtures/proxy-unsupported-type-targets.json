@@ -1,0 +1,12 @@
+[
+  {
+    "endpoint": "app-serverless.example.ap-northeast-1.rds.amazonaws.com",
+    "port": 5432,
+    "type": "RDS_SERVERLESS_ENDPOINT",
+    "target_arn": "arn:aws:rds:ap-northeast-1:111122223333:cluster:app-serverless",
+    "rds_resource_id": "cluster-SERVERLESSABCDEFGHIJK",
+    "tracked_cluster_id": "app-serverless",
+    "role": "READ_WRITE",
+    "target_health": "AVAILABLE"
+  }
+]

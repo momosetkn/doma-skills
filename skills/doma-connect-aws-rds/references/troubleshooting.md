@@ -53,9 +53,11 @@ mvn clean compile
 ```
 
 Run only the matching command. Confirm `AwsConnectionProbeDaoImpl.java` exists
-under the build tool's generated-source tree. Compilation requires no endpoint,
-secret value, IAM token, or network connection. A missing implementation is a
-processor/build failure, not an RDS failure.
+under the build tool's generated-source tree. Compilation needs no database or
+VPC connection, endpoint, secret value, or IAM token. A clean build may still
+need network access to the configured artifact repositories while resolving
+dependencies. A missing implementation is a processor/build failure, not an
+RDS failure.
 
 ### 2. Confirm AWS identity and the exact target
 
