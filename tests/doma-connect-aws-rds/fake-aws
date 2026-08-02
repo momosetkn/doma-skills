@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${AWS_CALL_LOG:?AWS_CALL_LOG is required}"
+: "${FIXTURE_DIR:?FIXTURE_DIR is required}"
+: "${FAKE_SCENARIO:?FAKE_SCENARIO is required}"
+printf '%q ' "$@" >> "$AWS_CALL_LOG"
+printf '\n' >> "$AWS_CALL_LOG"
+
+service=${1-}
+operation=${2-}
+
+require_arg_pair() {
+  local expected_option=$1
+  local expected_value=$2
+  shift 2
+  while (($# >= 2)); do
+    if [[ $1 == "$expected_option" && $2 == "$expected_value" ]]; then
+      return 0
+    fi
+    shift
+  done
+  printf 'missing exact argument pair: %s %s\n' "$expected_option" "$expected_value" >&2
+  exit 91
+}
+
+first_call=$(sed -n '1p' "$AWS_CALL_LOG")
+if [[ $service:$operation != sts:get-caller-identity && $first_call != sts\ get-caller-identity\ * ]]; then
+  printf 'identity must be the first AWS call\n' >&2
+  exit 91
+fi
+
+case "$service:$operation:$FAKE_SCENARIO" in
+  sts:get-caller-identity:*) file=identity.txt ;;
+  rds:describe-db-clusters:aurora-postgresql) file=aurora-postgresql-cluster.json ;;
+  rds:describe-db-clusters:not-found) file=not-found.json ;;
+  rds:describe-db-instances:rds-postgresql) file=rds-postgresql-instance.json ;;
+  rds:describe-db-clusters:aurora-mysql) file=aurora-mysql-cluster.json ;;
+  rds:describe-db-instances:rds-mysql) file=rds-mysql-instance.json ;;
+  rds:describe-db-proxies:postgresql-proxy) file=postgresql-proxy.json ;;
+  rds:describe-db-proxy-targets:postgresql-proxy) file=proxy-targets.json ;;
+  secretsmanager:describe-secret:*) file=secret-metadata.json ;;
+  *) printf 'unexpected operation: %s:%s for %s\n' "$service" "$operation" "$FAKE_SCENARIO" >&2; exit 90 ;;
+esac
+
+case "$service:$operation" in
+  sts:get-caller-identity)
+    require_arg_pair --query 'Account' "$@"
+    require_arg_pair --output 'text' "$@"
+    ;;
+  rds:describe-db-instances)
+    require_arg_pair --query 'DBInstances[0].{identifier:DBInstanceIdentifier,engine:Engine,endpoint:Endpoint.Address,port:Endpoint.Port,iam_auth:IAMDatabaseAuthenticationEnabled,security_group_ids:VpcSecurityGroups[].VpcSecurityGroupId}' "$@"
+    require_arg_pair --output 'json' "$@"
+    ;;
+  rds:describe-db-clusters)
+    require_arg_pair --query 'DBClusters[0].{identifier:DBClusterIdentifier,engine:Engine,endpoint:Endpoint,reader_endpoint:ReaderEndpoint,port:Port,iam_auth:IAMDatabaseAuthenticationEnabled,security_group_ids:VpcSecurityGroups[].VpcSecurityGroupId}' "$@"
+    require_arg_pair --output 'json' "$@"
+    ;;
+  rds:describe-db-proxies)
+    require_arg_pair --query 'DBProxies[0].{name:DBProxyName,engine_family:EngineFamily,endpoint:Endpoint,require_tls:RequireTLS,role_arn:RoleArn,security_group_ids:VpcSecurityGroupIds,auth:Auth[].{auth_scheme:AuthScheme,iam_auth:IAMAuth,secret_arn:SecretArn}}' "$@"
+    require_arg_pair --output 'json' "$@"
+    ;;
+  rds:describe-db-proxy-targets)
+    require_arg_pair --query 'Targets[].{endpoint:Endpoint,port:Port,type:Type,target_arn:TargetArn,rds_resource_id:RdsResourceId,target_health:TargetHealth.State}' "$@"
+    require_arg_pair --output 'json' "$@"
+    ;;
+  secretsmanager:describe-secret)
+    require_arg_pair --query '{name:Name,arn:ARN,rotation_enabled:RotationEnabled,kms_key_id:KmsKeyId}' "$@"
+    require_arg_pair --output 'json' "$@"
+    ;;
+esac
+sed -n '1,$p' "$FIXTURE_DIR/$file"

@@ -13,7 +13,7 @@ Confirm identity first, then inspect only an explicitly selected existing target
 
 ## Inspection interface
 
-Use this exact interface when the bundled inspection script is available:
+After the user confirms the expected account, region, target kind, and exact resource id, run the bundled [read-only RDS connection inspector](../scripts/inspect-rds-connection.sh) with this exact interface. Do not execute it while any required targeting fact remains unconfirmed:
 
 ```bash
 scripts/inspect-rds-connection.sh \
@@ -26,6 +26,14 @@ scripts/inspect-rds-connection.sh \
 ```
 
 `--expected-account`, `--region`, `--target-kind`, and `--target-id` are mandatory. `--profile` and `--secret-id` are optional. Accept only the documented target kinds for an exact DB instance, DB cluster, or RDS Proxy. Fail before any resource describe call when required targeting input is absent or `sts get-caller-identity` does not match the expected account.
+
+The script emits one JSON record per inspected concern and uses these exit categories:
+
+- `0`: identity matched and every requested inspection completed.
+- `64`: an argument is missing, malformed, or unknown; no AWS call is made.
+- `65`: the caller account differs from `--expected-account`; only the identity call is made.
+- `66`: the selected DB instance, DB cluster, or RDS Proxy is not found after identity confirmation.
+- Other nonzero statuses: the AWS CLI or another required local command failed; stop at that failure and do not broaden the inspection.
 
 ## Supported engine gate
 

@@ -16,7 +16,7 @@ Apply this workflow only to an existing supported project and an existing RDS, A
 Follow every stage in order. At stage 2, read [AWS discovery](references/aws-discovery.md) before describing or inspecting the target. At stage 3, read [connection modes](references/connection-modes.md) before selecting a topology or authentication mode.
 
 1. Inspect the existing project and preserve its build, language, Doma, JDK, Kotlin, pool, and transaction choices.
-2. Confirm AWS account, region, target kind, and exact resource id before describing resources.
+2. Confirm AWS account, region, target kind, and exact resource id before describing resources. Only after all four are confirmed, run the bundled [read-only RDS connection inspector](scripts/inspect-rds-connection.sh) as routed by [AWS discovery](references/aws-discovery.md).
 3. Choose Proxy, direct wrapper, direct IAM, or direct secret-backed JDBC from evidence; never stack topology-owning Proxy and wrapper plugins blindly.
 4. Map PostgreSQL targets to `PostgresDialect` and MySQL 8 targets to `MysqlDialect(MysqlDialect.MySqlVersion.V8)`.
 5. Build the smallest matching `DataSource` and `Config` without putting credentials in DAO code.

@@ -1,0 +1,1 @@
+{"identifier":"app-rds-pg","engine":"postgres","endpoint":"app-rds-pg.example.ap-northeast-1.rds.amazonaws.com","port":5432,"iam_auth":false,"security_group_ids":["sg-0123456789abcdef1"]}
