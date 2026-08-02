@@ -23,6 +23,16 @@ Follow every stage in order. At stage 2, read [AWS discovery](references/aws-dis
 6. Verify compile, DNS/TCP, TLS, authentication, JDBC, then Doma `SELECT 1`; stop at the first failure.
 7. Report the selected mode, required runtime IAM actions, changed files, completed gates, and first unresolved gate without secret material.
 
+## Reference map
+
+| Need | Read or run |
+| --- | --- |
+| Choose direct, IAM, secret, Proxy, or wrapper mode | [Connection Modes](references/connection-modes.md) |
+| Confirm the exact AWS target without secret retrieval | [AWS Discovery](references/aws-discovery.md) and `scripts/inspect-rds-connection.sh` |
+| Add JDBC dependencies, `DataSource`, Doma `Config`, dialect, and probe | [Doma DataSource](references/doma-datasource.md) |
+| Adjust credential and pool lifetime for EC2, ECS, EKS, or Lambda | [Runtime Guidance](references/runtime-guidance.md) |
+| Recover from the first failed verification layer | [Troubleshooting](references/troubleshooting.md) |
+
 Stop before code changes when the expected account, region, exact target, engine, runtime, or authentication contract is ambiguous. Preserve compatible project-selected dependency versions and JDKs; current release pins are examples, not an upgrade instruction. Preserve the application's transaction owner. If it uses Doma local transactions, wrap the final connection `DataSource`; otherwise keep the existing pool and transaction strategy.
 
 Never expose or log a password, secret value, IAM token, access key, credential-bearing URL, or copied environment-file contents. Never disable TLS or hostname verification to pass a probe. Generate IAM tokens for new physical connections rather than setting one startup token as a long-lived pool password.
