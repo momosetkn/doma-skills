@@ -135,9 +135,10 @@ def _balanced_end(source: str, brace: int) -> int | None:
     return None
 
 
-def find_top_level_block(source: str, name: str) -> BuildSpan | None:
-    """Return the outer span of an unambiguous top-level Gradle block."""
+def _top_level_blocks(source: str, name: str) -> tuple[BuildSpan, ...]:
+    """Return all unambiguous top-level Gradle blocks with the requested name."""
     depth, index = 0, 0
+    blocks: list[BuildSpan] = []
     while index < len(source):
         skipped = _skip_non_code(source, index)
         if skipped != index:
@@ -163,11 +164,19 @@ def find_top_level_block(source: str, name: str) -> BuildSpan | None:
                 if cursor < len(source) and source[cursor] == "{":
                     block_end = _balanced_end(source, cursor)
                     if block_end is not None:
-                        return BuildSpan(index, block_end)
+                        blocks.append(BuildSpan(index, block_end))
+                        index = block_end
+                        continue
             index = end
             continue
         index += 1
-    return None
+    return tuple(blocks)
+
+
+def find_top_level_block(source: str, name: str) -> BuildSpan | None:
+    """Return the first unambiguous top-level Gradle block with the requested name."""
+    blocks = _top_level_blocks(source, name)
+    return blocks[0] if blocks else None
 
 
 def find_managed_region(source: str, region: str) -> BuildSpan | None:
@@ -357,6 +366,21 @@ def _add_to_block(source: str, span: BuildSpan | None, name: str, line: str) -> 
     return TextEdit(span.end - 1, span.end - 1, line)
 
 
+def _is_code_position(source: str, position: int) -> bool:
+    index = 0
+    while index < len(source):
+        skipped = _skip_non_code(source, index)
+        if skipped != index:
+            if index <= position < skipped:
+                return False
+            index = skipped
+            continue
+        if index == position:
+            return True
+        index += 1
+    return False
+
+
 def _matching_declarations(source: str, spec: BuildSpec, kind: Literal["plugin", "driver"]) -> list[re.Match[str]]:
     if kind == "plugin":
         pattern = (
@@ -367,7 +391,16 @@ def _matching_declarations(source: str, spec: BuildSpec, kind: Literal["plugin",
         pattern = r'\bdomaCodeGen\s*\(\s*"[^"]+"\s*\)'
     else:
         pattern = r"\bdomaCodeGen\s+['\"][^'\"]+['\"]"
-    return list(re.finditer(pattern, source))
+    matches = list(re.finditer(pattern, source))
+    if kind != "plugin":
+        return matches
+    plugin_blocks = _top_level_blocks(source, "plugins")
+    return [
+        match
+        for match in matches
+        if _is_code_position(source, match.start())
+        and any(block.start <= match.start() < block.end for block in plugin_blocks)
+    ]
 
 
 def _edits_for(spec: BuildSpec, source: str, metamodel: bool) -> tuple[TextEdit, ...]:
@@ -377,13 +410,13 @@ def _edits_for(spec: BuildSpec, source: str, metamodel: bool) -> tuple[TextEdit,
     managed = find_managed_region(source, "begin")
     if "domaSync" in source and managed is None:
         raise SafetyError("unmanaged domaSync configuration is ambiguous")
-    plugins = find_top_level_block(source, "plugins")
-    dependencies = find_top_level_block(source, "dependencies")
-    for span in (plugins, dependencies):
+    plugin_blocks = _top_level_blocks(source, "plugins")
+    dependency_blocks = _top_level_blocks(source, "dependencies")
+    plugins = plugin_blocks[0] if plugin_blocks else None
+    dependencies = dependency_blocks[0] if dependency_blocks else None
+    for span in (*plugin_blocks, *dependency_blocks):
         if span is not None and contains_dynamic_structure(source, span):
             raise SafetyError("dynamic Gradle plugin or dependency structure is unsafe")
-    if re.search(r"(?s)\bplugins\s*\{.*?\bid\s*\(\s*[^\s\"']", source):
-        raise SafetyError("dynamic Gradle plugin or dependency structure is unsafe")
     edits: list[TextEdit] = []
     plugin_matches = _matching_declarations(source, spec, "plugin")
     if len(plugin_matches) > 1:

@@ -108,6 +108,28 @@ dependencies { domaCodeGen("org.postgresql:postgresql:42.7.10") }
             self.assertEqual(1, build.count('id("org.domaframework.doma.codegen")'))
             self.assertEqual(1, build.count('domaCodeGen("org.postgresql:postgresql:42.7.10")'))
 
+    def test_kotlin_plugin_declarations_in_comments_and_strings_do_not_block_insertion(self) -> None:
+        directory, project = self.make_project(extra='''
+// id("org.domaframework.doma.codegen") version "3.2.2"
+val ignoredCodeGenPlugin = "id(\\\"org.domaframework.doma.codegen\\\") version \\\"3.2.2\\\""
+''')
+        with directory:
+            plan = self.create_plan(project)
+            self.assertEqual(0, run_configurator(project, "apply", "--plan", str(plan)).returncode)
+            plugins = (project / "build.gradle.kts").read_text(encoding="utf-8").split("}", 1)[0]
+            self.assertIn('id("org.domaframework.doma.codegen") version "3.2.2"', plugins)
+
+    def test_groovy_plugin_declarations_in_comments_and_strings_do_not_block_insertion(self) -> None:
+        directory, project = self.make_project("build.gradle", extra="""
+// id 'org.domaframework.doma.codegen' version '3.2.2'
+def ignoredCodeGenPlugin = \"id 'org.domaframework.doma.codegen' version '3.2.2'\"
+""")
+        with directory:
+            plan = self.create_plan(project)
+            self.assertEqual(0, run_configurator(project, "apply", "--plan", str(plan)).returncode)
+            plugins = (project / "build.gradle").read_text(encoding="utf-8").split("}", 1)[0]
+            self.assertIn("id 'org.domaframework.doma.codegen' version '3.2.2'", plugins)
+
     def test_existing_managed_doma_sync_block_is_repaired(self) -> None:
         extra = '''
 // doma-sync-entities-from-database:begin
