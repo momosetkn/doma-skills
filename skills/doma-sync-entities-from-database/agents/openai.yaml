@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync Doma Entities from Database"
+  short_description: "Generate and safely merge Java or Kotlin Doma entities"
+  default_prompt: "Use $doma-sync-entities-from-database to generate Doma entity candidates from this database and apply only structurally safe changes."
