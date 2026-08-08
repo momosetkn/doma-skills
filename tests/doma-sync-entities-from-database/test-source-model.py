@@ -148,6 +148,27 @@ public class Employee {
         self.assertIn("handwritten method: setName", entity.unsupported_reasons)
         self.assertFalse(entity.generated_only)
 
+    def test_java_accessors_with_comments_before_the_body_are_handwritten(self) -> None:
+        source = """import org.seasar.doma.*;
+/** */
+@Entity @Table(name = "employee")
+public class Employee {
+  /** */ @Column(name = "name") String name;
+  /** Returns the name. */
+  public String getName() /* custom getter */ { return name; }
+  /** Sets the name. */
+  public void setName(String name) /* custom setter */ { this.name = name; }
+}
+"""
+
+        entity = parse_java(source, path="Employee.java").entity
+        self.assertEqual((None, None), tuple(
+            method.generated_accessor_for for method in entity.methods
+        ))
+        self.assertIn("handwritten method: getName", entity.unsupported_reasons)
+        self.assertIn("handwritten method: setName", entity.unsupported_reasons)
+        self.assertFalse(entity.generated_only)
+
     def test_java_annotation_arguments_ids_special_mappings_and_domain_types_are_preserved(self) -> None:
         source = (FIXTURES / "semantics-java.java").read_text(encoding="utf-8")
         parsed = parse_java(
@@ -429,6 +450,40 @@ class X {
                     entity.unsupported_reasons,
                 )
                 self.assertFalse(entity.generated_only)
+
+    def test_fully_qualified_annotation_expressions_are_not_codegen_template_shapes(self) -> None:
+        java = """import org.seasar.doma.*;
+/** */
+@Entity(listener = com.example.EmployeeListener.class, naming = org.seasar.doma.jdbc.entity.NamingType.LOWER_CASE, metamodel = @Metamodel)
+@Table(name = "x")
+public class X {
+  /** */ @Id @GeneratedValue(strategy = org.seasar.doma.GenerationType.IDENTITY) @Column(name = "id") public Long id;
+}
+"""
+        kotlin = """import org.seasar.doma.*
+/** */
+@Entity(listener = com.example.EmployeeListener::class, naming = org.seasar.doma.jdbc.entity.NamingType.LOWER_CASE, metamodel = Metamodel())
+@Table(name = "x")
+class X {
+  /** */ @Id @GeneratedValue(strategy = org.seasar.doma.GenerationType.IDENTITY) @Column(name = "id") var id: Long = -1L
+}
+"""
+
+        for parsed in (parse_java(java, path="X.java"), parse_kotlin(kotlin, path="X.kt")):
+            with self.subTest(language=parsed.entity.language):
+                reasons = parsed.entity.unsupported_reasons
+                self.assertTrue(any(
+                    reason.startswith(
+                        "non-template annotation arguments: org.seasar.doma.Entity on class"
+                    )
+                    for reason in reasons
+                ))
+                self.assertIn(
+                    "non-template annotation arguments: org.seasar.doma.GeneratedValue "
+                    "on property id (strategy=org.seasar.doma.GenerationType.IDENTITY)",
+                    reasons,
+                )
+                self.assertFalse(parsed.entity.generated_only)
 
     def test_handwritten_multiline_property_docs_never_classify_as_codegen_only(self) -> None:
         java = """import org.seasar.doma.*;\n/** Handwritten entity. */\n@Entity @Table(name = \"x\") public class X {\n  /**\n   * Application-owned meaning.\n   */\n  @Column(name = \"value\") public String value;\n}\n"""

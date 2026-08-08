@@ -133,7 +133,9 @@ def parse_kotlin(
             body_span = SourceSpan(significant[open_index].span.end, significant[close_index].span.start)
 
     class_annotations = candidate["annotations"]
-    reasons.extend(_non_template_annotation_argument_reasons(class_annotations, "class"))
+    reasons.extend(_non_template_annotation_argument_reasons(
+        class_annotations, "class", "kotlin"
+    ))
     class_header_tokens = _tokens_outside_annotations(
         significant[candidate["declaration_floor"]:class_index], class_annotations
     )
@@ -258,7 +260,7 @@ def parse_kotlin(
                     prop, declaration_kind, initializer, delegated, modifiers = parsed_property
                     properties.append(prop)
                     reasons.extend(_non_template_annotation_argument_reasons(
-                        prop.annotations, "property " + prop.name
+                        prop.annotations, "property " + prop.name, "kotlin"
                     ))
                     generated_default = _is_codegen_default(prop.type_name, prop.nullable, initializer)
                     property_metadata[prop.name] = {
@@ -574,7 +576,7 @@ def _parse_constructor_properties(
         property_model, _, initializer, delegated, _ = prop
         properties.append(property_model)
         reasons.extend(_non_template_annotation_argument_reasons(
-            property_model.annotations, "property " + property_model.name
+            property_model.annotations, "property " + property_model.name, "kotlin"
         ))
         reasons.append("kotlin primary-constructor property: " + property_model.name)
         if initializer or delegated:

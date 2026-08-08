@@ -134,7 +134,9 @@ def parse_java(
         class_body = SourceSpan(significant[open_index].span.end, significant[close_index].span.start)
 
     class_annotations = candidate["annotations"]
-    reasons.extend(_non_template_annotation_argument_reasons(class_annotations, "class"))
+    reasons.extend(_non_template_annotation_argument_reasons(
+        class_annotations, "class", "java"
+    ))
     class_header_tokens = _tokens_outside_annotations(
         significant[candidate["declaration_floor"]:kind_index], class_annotations
     )
@@ -242,7 +244,7 @@ def parse_java(
         prop, modifiers, initializer = parsed_field
         properties.append(prop)
         reasons.extend(_non_template_annotation_argument_reasons(
-            prop.annotations, "property " + prop.name
+            prop.annotations, "property " + prop.name, "java"
         ))
         field_metadata[prop.name] = {
             "modifiers": modifiers,
@@ -498,13 +500,13 @@ def _annotation_arguments(
 
 
 def _non_template_annotation_argument_reasons(
-    annotations: Sequence[AnnotationModel], location: str
+    annotations: Sequence[AnnotationModel], location: str, language: str
 ) -> list[str]:
     reasons: list[str] = []
     for annotation in annotations:
         if annotation.qualified_name not in TEMPLATE_ANNOTATION_ARGUMENT_ORDER:
             continue
-        if _has_template_annotation_arguments(annotation):
+        if _has_template_annotation_arguments(annotation, language):
             continue
         arguments = ", ".join(
             key + "=" + value for key, value in annotation.arguments
@@ -516,7 +518,7 @@ def _non_template_annotation_argument_reasons(
     return reasons
 
 
-def _has_template_annotation_arguments(annotation: AnnotationModel) -> bool:
+def _has_template_annotation_arguments(annotation: AnnotationModel, language: str) -> bool:
     qualified_name = annotation.qualified_name
     allowed_order = TEMPLATE_ANNOTATION_ARGUMENT_ORDER[qualified_name]
     keys = tuple(key for key, _ in annotation.arguments)
@@ -528,26 +530,41 @@ def _has_template_annotation_arguments(annotation: AnnotationModel) -> bool:
         listener = values.get("listener")
         naming = values.get("naming")
         metamodel = values.get("metamodel")
-        if listener is not None and not listener.endswith((".class", "::class")):
+        if listener is not None and not _is_codegen_listener(listener, language):
             return False
-        if naming is not None and naming.rsplit(".", 1)[-1] not in {
-            "LOWER_CASE", "SNAKE_LOWER_CASE", "SNAKE_UPPER_CASE", "UPPER_CASE",
+        if naming is not None and naming not in {
+            "NamingType.LOWER_CASE", "NamingType.SNAKE_LOWER_CASE",
+            "NamingType.SNAKE_UPPER_CASE", "NamingType.UPPER_CASE",
         }:
             return False
-        return metamodel is None or metamodel in {"@Metamodel", "Metamodel()"}
+        expected_metamodel = "@Metamodel" if language == "java" else "Metamodel()"
+        return metamodel is None or metamodel == expected_metamodel
     if qualified_name == "org.seasar.doma.Table":
         return bool(values) and all(_plain_string(value) is not None for value in values.values())
     if qualified_name == "org.seasar.doma.Column":
         return keys == ("name",) and bool(_plain_string(values["name"]))
     if qualified_name == "org.seasar.doma.GeneratedValue":
-        return keys == ("strategy",) and values["strategy"].rsplit(".", 1)[-1] in {
-            "IDENTITY", "SEQUENCE", "TABLE",
+        return keys == ("strategy",) and values["strategy"] in {
+            "GenerationType.IDENTITY", "GenerationType.SEQUENCE", "GenerationType.TABLE",
         }
     if qualified_name == "org.seasar.doma.SequenceGenerator":
         return _has_generator_arguments(values, keys, "sequence")
     if qualified_name == "org.seasar.doma.TableGenerator":
         return _has_generator_arguments(values, keys, "pkColumnValue")
     return not annotation.arguments
+
+
+def _is_codegen_listener(value: str, language: str) -> bool:
+    suffix = ".class" if language == "java" else "::class"
+    if not value.endswith(suffix):
+        return False
+    simple_name = value[:-len(suffix)]
+    if not simple_name:
+        return False
+    return (simple_name[0].isalpha() or simple_name[0] in {"_", "$"}) and all(
+        character.isalnum() or character in {"_", "$"}
+        for character in simple_name[1:]
+    )
 
 
 def _has_generator_arguments(
@@ -723,7 +740,9 @@ def _parse_method(
         token.text for token in body_tokens
         if token.kind == "IDENT" and token.text not in JAVA_KEYWORDS
     ))
-    generated = _generated_accessor(name, tokens, body_tokens, properties, source[span.start:span.end])
+    generated = _generated_accessor(
+        name, tokens, body_tokens, properties, source, source[span.start:span.end]
+    )
     return MethodModel(name, signature, span, generated, referenced)
 
 
@@ -732,6 +751,7 @@ def _generated_accessor(
     tokens: Sequence[Token],
     body: Sequence[Token],
     properties: dict[str, PropertyModel],
+    source: str,
     method_source: str,
 ) -> str | None:
     open_paren = _top_level_text(tokens, 0, len(tokens), "(")
@@ -741,6 +761,9 @@ def _generated_accessor(
     if close_paren is None:
         return None
     if close_paren + 1 >= len(tokens) or tokens[close_paren + 1].text != "{":
+        return None
+    gap = source[tokens[close_paren].span.end:tokens[close_paren + 1].span.start]
+    if gap.strip():
         return None
     header = tokens[:open_paren]
     if len(header) < 3 or header[0].text != "public" or header[-1].text != name:
