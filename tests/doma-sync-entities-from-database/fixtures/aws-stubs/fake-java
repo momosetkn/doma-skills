@@ -5,8 +5,24 @@ import sys
 from pathlib import Path
 
 
+AWS_CREDENTIAL_NAMES = (
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+)
+
+
 with open(os.environ["FAKE_CALL_LOG"], "a", encoding="utf-8") as handle:
     handle.write("java|" + "|".join(sys.argv[1:]) + "\n")
+if os.environ.get("FAKE_LEAK_AWS_ENV") == "true":
+    values = [os.environ[name] for name in AWS_CREDENTIAL_NAMES if os.environ.get(name)]
+    with open(os.environ["FAKE_CALL_LOG"], "a", encoding="utf-8") as handle:
+        if values:
+            leaked = "|".join(values)
+            handle.write("aws-env-leak|java|snapshot|" + leaked + "\n")
+            print("aws-stdout=" + leaked)
+            print("aws-stderr=" + leaked, file=sys.stderr)
+        else:
+            handle.write("aws-env-clean|java|snapshot\n")
 expected = {
     "DOMA_CODEGEN_DB_URL": "EXPECTED_DB_URL",
     "DOMA_CODEGEN_DB_USER": "EXPECTED_DB_USER",

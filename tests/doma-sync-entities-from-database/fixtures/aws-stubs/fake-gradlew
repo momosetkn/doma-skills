@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -9,6 +10,39 @@ def log(line):
         handle.write(line + "\n")
 
 
+AWS_CREDENTIAL_NAMES = (
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+)
+
+
+def expose_aws_environment(task):
+    if os.environ.get("FAKE_LEAK_AWS_ENV") != "true":
+        return
+    values = [os.environ[name] for name in AWS_CREDENTIAL_NAMES if os.environ.get(name)]
+    if values:
+        leaked = "|".join(values)
+        log("aws-env-leak|gradle|" + task + "|" + leaked)
+        print("aws-stdout=" + leaked)
+        print("aws-stderr=" + leaked, file=sys.stderr)
+    else:
+        log("aws-env-clean|gradle|" + task)
+
+
+def effective_gradle_home():
+    arguments = sys.argv[1:]
+    if "--gradle-user-home" in arguments:
+        index = arguments.index("--gradle-user-home")
+        if index + 1 >= len(arguments):
+            raise SystemExit(97)
+        return Path(arguments[index + 1])
+    for name in ("JDK_JAVA_OPTIONS", "JAVA_TOOL_OPTIONS", "JAVA_OPTS", "GRADLE_OPTS"):
+        match = re.search(r"(?:^|\s)-Dgradle\.user\.home=([^\s]+)", os.environ.get(name, ""))
+        if match:
+            return Path(match.group(1))
+    return Path(os.environ.get("GRADLE_USER_HOME", ""))
+
+
 for value in (os.environ.get("FAKE_SECRET_PASSWORD", ""), os.environ.get("FAKE_IAM_TOKEN", "")):
     if value and any(value in arg for arg in sys.argv[1:]):
         raise SystemExit(91)
@@ -16,6 +50,21 @@ for value in (os.environ.get("FAKE_SECRET_PASSWORD", ""), os.environ.get("FAKE_I
 log(Path(sys.argv[0]).name + "|" + "|".join(sys.argv[1:]))
 task = sys.argv[-1]
 root = Path.cwd()
+if os.environ.get("FAKE_REJECT_GRADLE_USER_PROPERTIES") == "true":
+    gradle_home = effective_gradle_home()
+    properties = gradle_home / "gradle.properties"
+    text = properties.read_text(encoding="utf-8") if properties.is_file() else ""
+    sensitive = [line.split("=", 1)[1] for line in text.splitlines()
+                 if "=" in line and ("Password" in line or "password" in line)]
+    if sensitive:
+        leaked = "|".join(sensitive)
+        log("gradle-user-home-leak|" + task + "|" + leaked)
+        print("gradle-user-home=" + leaked, file=sys.stderr)
+        raise SystemExit(95)
+    if gradle_home == Path(os.environ["FAKE_ORIGINAL_GRADLE_USER_HOME"]):
+        raise SystemExit(96)
+    log("gradle-user-home-clean|" + task)
+expose_aws_environment(task)
 if task == "domaSyncWriteCodeGenClasspath":
     output = root / "build/doma-codegen/codegen-classpath.txt"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +87,15 @@ elif task == "domaCodeGenDomaSyncEntity":
         print("credential environment mismatch", file=sys.stderr)
         raise SystemExit(92)
     redirected = os.environ.get("FAKE_REDIRECT_GENERATED")
-    if redirected:
+    nested = os.environ.get("FAKE_CREATE_NESTED_GENERATED_SYMLINK") == "true"
+    if nested:
+        external = Path(os.environ["FAKE_NESTED_GENERATED_TARGET"])
+        external.mkdir(parents=True, exist_ok=True)
+        (external / "Generated.java").write_text("production-sentinel\n", encoding="utf-8")
+        generated = root / "build/doma-codegen/generated"
+        generated.mkdir(parents=True, exist_ok=True)
+        (generated / "example").symlink_to(external, target_is_directory=True)
+    elif redirected:
         external = Path(redirected)
         external.mkdir(parents=True, exist_ok=True)
         (external / "keep.txt").write_text("must survive\n", encoding="utf-8")
@@ -49,6 +106,14 @@ elif task == "domaCodeGenDomaSyncEntity":
         output.write_text(os.environ.get("FAKE_GENERATED_SECRET", "class Generated {}\n"), encoding="utf-8")
     if os.environ.get("FAKE_ENTITY_EXIT"):
         raise SystemExit(int(os.environ["FAKE_ENTITY_EXIT"]))
+    if os.environ.get("FAKE_REDIRECT_BUILD_AFTER_ENTITY") == "true":
+        import shutil
+        external = Path(os.environ["FAKE_REDIRECT_BUILD_TARGET"])
+        sentinel = external / "doma-codegen/generated/production.txt"
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("production-sentinel\n", encoding="utf-8")
+        shutil.rmtree(root / "build")
+        (root / "build").symlink_to(external, target_is_directory=True)
 if os.environ.get("FAKE_LEAK_OUTPUT") == "true" and os.environ.get("DOMA_SYNC_JDBC_PASSWORD"):
     print("stdout=" + os.environ["DOMA_SYNC_JDBC_PASSWORD"])
     print("stderr=" + os.environ["DOMA_SYNC_JDBC_PASSWORD"], file=sys.stderr)

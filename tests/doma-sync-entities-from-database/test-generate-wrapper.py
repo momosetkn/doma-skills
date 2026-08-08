@@ -13,6 +13,13 @@ WRAPPER = ROOT / "skills/doma-sync-entities-from-database/scripts/generate-entit
 FIXTURES = Path(__file__).with_name("fixtures") / "aws-stubs"
 PASSWORD = "test-password-sentinel-4"
 TOKEN = "test-iam-token-sentinel-4"
+AWS_SENTINELS = {
+    "AWS_ACCESS_KEY_ID": "aws-access-key-sentinel-4",
+    "AWS_SECRET_ACCESS_KEY": "aws-secret-key-sentinel-4",
+    "AWS_SESSION_TOKEN": "aws-session-token-sentinel-4",
+    "AWS_SECURITY_TOKEN": "aws-security-token-sentinel-4",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN": "aws-container-token-sentinel-4",
+}
 
 
 class GenerateWrapperTest(unittest.TestCase):
@@ -107,6 +114,32 @@ class GenerateWrapperTest(unittest.TestCase):
         })
         result = self._run()
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_gradle_children_use_isolated_user_home_without_loading_credentials(self):
+        self._local_env()
+        stale = "stale-user-home-password-sentinel-4"
+        properties = self.user_gradle / "gradle.properties"
+        original = (
+            "domaCodegenDbUrl=jdbc:postgresql://stale.example.test:5432/stale\n"
+            "domaCodegenDbUser=stale_user\n"
+            f"domaCodegenDbPassword={stale}\n"
+            f"domaSyncJdbcPassword={stale}\n"
+        )
+        properties.write_text(original, encoding="utf-8")
+        self.env.update({
+            "FAKE_REJECT_GRADLE_USER_PROPERTIES": "true",
+            "FAKE_ORIGINAL_GRADLE_USER_HOME": str(self.user_gradle),
+            "JAVA_OPTS": f"-Dgradle.user.home={self.user_gradle}",
+            "JAVA_TOOL_OPTIONS": f"-Dgradle.user.home={self.user_gradle}",
+            "JDK_JAVA_OPTIONS": f"-Dgradle.user.home={self.user_gradle}",
+        })
+        result = self._run()
+        self.assertEqual(0, result.returncode, result.stderr)
+        combined = result.stdout + result.stderr + "\n".join(self._calls())
+        self.assertNotIn(stale, combined)
+        self.assertEqual(original, properties.read_text(encoding="utf-8"))
+        clean_events = [line for line in self._calls() if line.startswith("gradle-user-home-clean|")]
+        self.assertEqual(2, len(clean_events), self._calls())
 
     def test_missing_local_credentials_stop_before_java_or_gradle(self):
         result = self._run()
@@ -280,9 +313,15 @@ class GenerateWrapperTest(unittest.TestCase):
         result = self._run()
         self.assertEqual(0, result.returncode, result.stderr)
         calls = self._calls()
-        self.assertEqual("gradlew|--no-daemon|domaSyncWriteCodeGenClasspath", calls[0])
+        classpath = calls[0].split("|")
+        self.assertEqual(["gradlew", "--no-daemon", "--gradle-user-home"], classpath[:3])
+        self.assertEqual("domaSyncWriteCodeGenClasspath", classpath[4])
         self.assertTrue(calls[1].startswith("java|--class-path|fixture-classpath|"), calls)
-        self.assertEqual("gradlew|--no-daemon|domaCodeGenDomaSyncEntity", calls[2])
+        entity = calls[2].split("|")
+        self.assertEqual(["gradlew", "--no-daemon", "--gradle-user-home"], entity[:3])
+        self.assertEqual("domaCodeGenDomaSyncEntity", entity[4])
+        self.assertEqual(classpath[3], entity[3])
+        self.assertNotEqual(str(self.user_gradle), classpath[3])
 
     def test_secret_and_token_sentinels_are_redacted_from_both_streams(self):
         self._local_env()
@@ -332,6 +371,30 @@ class GenerateWrapperTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotIn(TOKEN, "\n".join(self._calls()))
 
+    def test_non_aws_children_do_not_inherit_standard_aws_credentials(self):
+        self.env.update({
+            **AWS_SENTINELS,
+            "FAKE_LEAK_AWS_ENV": "true",
+            "FAKE_REQUIRE_AWS_ENV": "true",
+            "FAKE_AWS_SCENARIO": "instance",
+            "EXPECTED_DB_URL": "jdbc:postgresql://db.example.test:5432/appdb?sslmode=verify-full",
+            "EXPECTED_DB_USER": "app_user",
+            "EXPECTED_DB_PASSWORD": PASSWORD,
+        })
+        result = self._run("aws-secret", extra=self._aws_args(extra=("--secret-id", "app-secret")))
+        self.assertEqual(0, result.returncode, result.stderr)
+        combined = result.stdout + result.stderr + "\n".join(self._calls())
+        for sentinel in AWS_SENTINELS.values():
+            self.assertNotIn(sentinel, combined)
+        clean_events = [line for line in self._calls() if line.startswith("aws-env-clean|")]
+        self.assertEqual(
+            {"aws-env-clean|gradle|domaSyncWriteCodeGenClasspath", "aws-env-clean|java|snapshot",
+             "aws-env-clean|gradle|domaCodeGenDomaSyncEntity"},
+            set(clean_events),
+        )
+        self.assertTrue(any(line.startswith("aws-credential-env-present|sts|get-caller-identity")
+                            for line in self._calls()))
+
     def test_generated_candidate_containing_secret_sentinel_is_removed_and_fails(self):
         self._local_env()
         self.env["FAKE_GENERATED_SECRET"] = PASSWORD
@@ -360,6 +423,61 @@ class GenerateWrapperTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("output path", result.stderr)
         self.assertTrue((redirected / "keep.txt").is_file())
+
+    def test_stale_generated_candidate_is_cleaned_before_codegen(self):
+        self._local_env()
+        stale = self.project / "build/doma-codegen/generated/example/Stale.java"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("class Stale {}\n", encoding="utf-8")
+        result = self._run()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(stale.exists())
+        self.assertTrue((stale.parent / "Generated.java").is_file())
+
+    def test_nested_generated_symlink_stops_before_codegen_and_preserves_external_file(self):
+        self._local_env()
+        external = self.base / "production-source"
+        external.mkdir()
+        sentinel = external / "Generated.java"
+        sentinel.write_text("production-sentinel\n", encoding="utf-8")
+        generated = self.project / "build/doma-codegen/generated"
+        generated.mkdir(parents=True)
+        (generated / "example").symlink_to(external, target_is_directory=True)
+        result = self._run()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("output path", result.stderr)
+        self.assertEqual("production-sentinel\n", sentinel.read_text(encoding="utf-8"))
+        self.assertFalse(any("domaCodeGenDomaSyncEntity" in line for line in self._calls()))
+
+    def test_codegen_created_nested_symlink_is_rejected_and_preserves_external_file(self):
+        self._local_env()
+        external = self.base / "post-codegen-production-source"
+        self.env.update({
+            "FAKE_CREATE_NESTED_GENERATED_SYMLINK": "true",
+            "FAKE_NESTED_GENERATED_TARGET": str(external),
+        })
+        result = self._run()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("output path", result.stderr)
+        self.assertEqual(
+            "production-sentinel\n",
+            (external / "Generated.java").read_text(encoding="utf-8"),
+        )
+        self.assertFalse((self.project / "build/doma-codegen/generated").exists())
+
+    def test_post_child_build_ancestor_symlink_cleanup_preserves_external_tree(self):
+        self._local_env()
+        external = self.base / "external-build"
+        self.env.update({
+            "FAKE_REDIRECT_BUILD_AFTER_ENTITY": "true",
+            "FAKE_REDIRECT_BUILD_TARGET": str(external),
+        })
+        result = self._run()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("output path", result.stderr)
+        sentinel = external / "doma-codegen/generated/production.txt"
+        self.assertTrue(sentinel.is_file())
+        self.assertEqual("production-sentinel\n", sentinel.read_text(encoding="utf-8"))
 
     def test_path_replacement_after_classpath_stops_before_snapshot(self):
         self._local_env()

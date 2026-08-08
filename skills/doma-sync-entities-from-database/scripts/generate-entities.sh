@@ -19,11 +19,16 @@ db_password=""
 iam_token=""
 secret_response=""
 secret_parsed=""
+isolated_gradle_home=""
 
 cleanup_secrets() {
   unset db_password iam_token secret_response secret_parsed
   unset DOMA_CODEGEN_DB_PASSWORD DOMA_SYNC_JDBC_PASSWORD
   unset DOMA_REDACT_PASSWORD DOMA_REDACT_TOKEN
+  if [[ -n "$isolated_gradle_home" && -d "$isolated_gradle_home" ]]; then
+    rm -rf -- "$isolated_gradle_home"
+  fi
+  unset isolated_gradle_home
 }
 trap cleanup_secrets EXIT
 trap 'cleanup_secrets; trap - EXIT; exit 130' HUP INT TERM
@@ -74,8 +79,21 @@ classpath_file="$output_root/codegen-classpath.txt"
 snapshot_file="$output_root/schema-snapshot.json"
 generated_dir="$output_root/generated"
 
+unset_aws_credentials() {
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+  unset AWS_ACCESS_KEY AWS_SECRET_KEY AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_ROLE_SESSION_NAME
+  unset AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
+  unset AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+  unset AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE AWS_PROFILE AWS_DEFAULT_PROFILE
+}
+
+clean_python() (
+  unset_aws_credentials
+  command python3 "$@"
+)
+
 validate_output_paths() {
-  python3 - "$project_root" "$output_root" "$classpath_file" "$snapshot_file" "$generated_dir" <<'PY'
+  clean_python - "$project_root" "$output_root" "$classpath_file" "$snapshot_file" "$generated_dir" <<'PY'
 import pathlib
 import sys
 
@@ -94,12 +112,45 @@ for raw in sys.argv[2:]:
         raise SystemExit(1)
     if path.is_symlink():
         raise SystemExit(1)
+output_root = pathlib.Path(sys.argv[2])
+if output_root.exists():
+    for descendant in output_root.rglob("*"):
+        if descendant.is_symlink():
+            raise SystemExit(1)
 PY
 }
 validate_output_paths || die "output path must remain inside the project build directory" 65
 
+remove_generated_candidate() {
+  clean_python - "$project_root" "$generated_dir" <<'PY'
+import pathlib
+import shutil
+import sys
+
+project = pathlib.Path(sys.argv[1]).resolve()
+build = (project / "build").resolve()
+generated = pathlib.Path(sys.argv[2])
+try:
+    build.relative_to(project)
+    generated.resolve().relative_to(build)
+except ValueError:
+    raise SystemExit(1)
+for path in (project / "build", project / "build/doma-codegen", generated):
+    if path.is_symlink():
+        raise SystemExit(1)
+if generated.exists():
+    shutil.rmtree(generated)
+PY
+}
+
+prepare_generated_candidate() {
+  validate_output_paths || die "output path must remain inside the project build directory" 65
+  remove_generated_candidate || die "generated candidate path is unsafe" 65
+  validate_output_paths || die "output path must remain inside the project build directory" 65
+}
+
 scan_generated_outputs() {
-  DOMA_SCAN_PASSWORD="$db_password" DOMA_SCAN_TOKEN="$iam_token" python3 - "$snapshot_file" "$generated_dir" <<'PY'
+  DOMA_SCAN_PASSWORD="$db_password" DOMA_SCAN_TOKEN="$iam_token" clean_python - "$snapshot_file" "$generated_dir" <<'PY'
 import os
 import pathlib
 import re
@@ -125,7 +176,10 @@ PY
 }
 
 scan_or_remove_unsafe_outputs() {
-  validate_output_paths || die "output path must remain inside the project build directory" 65
+  if ! validate_output_paths; then
+    remove_generated_candidate || true
+    die "output path must remain inside the project build directory" 65
+  fi
   if ! scan_generated_outputs; then
     validate_output_paths || die "output path must remain inside the project build directory" 65
     rm -rf -- "$generated_dir"
@@ -134,7 +188,7 @@ scan_or_remove_unsafe_outputs() {
   fi
 }
 
-unsafe_field=$(python3 - "$project_root" <<'PY'
+unsafe_field=$(clean_python - "$project_root" <<'PY'
 import pathlib
 import re
 import sys
@@ -197,7 +251,7 @@ validate_scalar() {
 read_user_property() {
   local wanted=$1 properties_file=$2
   [[ -f "$properties_file" && ! -L "$properties_file" ]] || return 0
-  python3 - "$wanted" "$properties_file" <<'PY'
+  clean_python - "$wanted" "$properties_file" <<'PY'
 import pathlib
 import sys
 
@@ -220,7 +274,7 @@ PY
 }
 
 url_is_credential_free() {
-  python3 -c '
+  clean_python -c '
 import sys
 from urllib.parse import parse_qsl, urlsplit
 raw = sys.stdin.read()
@@ -282,6 +336,10 @@ else
   fi
 fi
 
+isolated_gradle_home=$(mktemp -d "${TMPDIR:-/tmp}/doma-sync-gradle-home.XXXXXX") \
+  || die "could not create an isolated Gradle user home" 70
+chmod 700 "$isolated_gradle_home"
+
 if [[ -x "$project_root/gradlew" && ! -L "$project_root/gradlew" ]]; then
   gradle_command=("$project_root/gradlew")
 elif [[ -n "${GRADLE_CMD-}" ]]; then
@@ -295,15 +353,17 @@ else
   gradle_command=("$resolved_gradle")
 fi
 
-redact_stream() {
-  DOMA_REDACT_PASSWORD="$db_password" DOMA_REDACT_TOKEN="$iam_token" python3 -c '
+redact_stream() (
+  unset_aws_credentials
+  export DOMA_REDACT_PASSWORD="$db_password" DOMA_REDACT_TOKEN="$iam_token"
+  command python3 -c '
 import os, sys
 values = [v.encode() for v in (os.environ.get("DOMA_REDACT_PASSWORD", ""), os.environ.get("DOMA_REDACT_TOKEN", "")) if v]
 for data in sys.stdin.buffer:
     for value in values: data = data.replace(value, b"[REDACTED]")
     sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
 '
-}
+)
 
 run_redacted() {
   local status
@@ -331,7 +391,7 @@ aws_call() {
 
 parse_target() {
   local kind=$1 identifier=$2
-  python3 -c '
+  clean_python -c '
 import json, sys
 kind, expected = sys.argv[1:3]
 data = json.load(sys.stdin)
@@ -370,7 +430,7 @@ if [[ "$connection" != "local" ]]; then
   aws_command=("$resolved_aws")
   [[ -z "$profile" ]] || aws_command+=(--profile "$profile")
   identity=$(aws_call sts get-caller-identity --output json) || die "AWS identity lookup failed" 70
-  actual_account=$(python3 -c 'import json,sys; value=json.load(sys.stdin).get("Account"); print(value if isinstance(value,str) else "")' \
+  actual_account=$(clean_python -c 'import json,sys; value=json.load(sys.stdin).get("Account"); print(value if isinstance(value,str) else "")' \
     <<< "$identity" 2>/dev/null) || die "AWS identity response is invalid" 70
   [[ "$actual_account" == "$expected_account" ]] || die "AWS account does not match --expected-account" 65
 
@@ -397,7 +457,7 @@ if [[ "$connection" != "local" ]]; then
       IFS=$'\x1f' read -r endpoint _ proxy_engine <<< "$proxy_fields"
       targets_json=$(aws_call rds describe-db-proxy-targets --db-proxy-name "$target_id" --region "$region" --output json) \
         || die "exact RDS proxy target lookup failed" 70
-      proxy_target_lines=$(python3 -c '
+      proxy_target_lines=$(clean_python -c '
 import json, sys
 targets = json.load(sys.stdin).get("Targets")
 if not isinstance(targets, list) or not targets: raise SystemExit(1)
@@ -449,9 +509,16 @@ fi
 set +e
 (
   cd -- "$project_root"
+  unset_aws_credentials
   unset DOMA_CODEGEN_DB_URL DOMA_CODEGEN_DB_USER DOMA_CODEGEN_DB_PASSWORD
   unset DOMA_SYNC_JDBC_URL DOMA_SYNC_JDBC_USER DOMA_SYNC_JDBC_PASSWORD
-  run_redacted "${gradle_command[@]}" --no-daemon domaSyncWriteCodeGenClasspath
+  unset ORG_GRADLE_PROJECT_domaCodegenDbUrl ORG_GRADLE_PROJECT_domaCodegenDbUser
+  unset ORG_GRADLE_PROJECT_domaCodegenDbPassword ORG_GRADLE_PROJECT_domaSyncJdbcUrl
+  unset ORG_GRADLE_PROJECT_domaSyncJdbcUser ORG_GRADLE_PROJECT_domaSyncJdbcPassword
+  unset GRADLE_OPTS
+  export GRADLE_USER_HOME="$isolated_gradle_home"
+  run_redacted "${gradle_command[@]}" --no-daemon --gradle-user-home "$isolated_gradle_home" \
+    domaSyncWriteCodeGenClasspath
 )
 classpath_status=$?
 set -e
@@ -468,7 +535,7 @@ IFS= read -r codegen_classpath < "$classpath_file" || true
 if [[ "$connection" == "aws-secret" ]]; then
   description=$(aws_call secretsmanager describe-secret --secret-id "$secret_id" --region "$region" --output json) \
     || die "Secret description failed" 70
-  python3 -c '
+  clean_python -c '
 import json, sys
 data=json.load(sys.stdin); arn=data.get("ARN", "")
 expected_region, expected_account = sys.argv[1:3]
@@ -478,7 +545,7 @@ raise SystemExit(0 if len(parts) > 5 and parts[3] == expected_region and parts[4
     || die "Secret identity does not match the confirmed region and account" 65
   secret_response=$(aws_call secretsmanager get-secret-value --secret-id "$secret_id" --region "$region" --output json) \
     || die "Secret retrieval failed" 70
-  secret_parsed=$(python3 -c '
+  secret_parsed=$(clean_python -c '
 import json, sys
 outer=json.load(sys.stdin)
 if "SecretBinary" in outer or not isinstance(outer.get("SecretString"), str): raise SystemExit(1)
@@ -518,6 +585,7 @@ fi
 set +e
 (
   cd -- "$project_root"
+  unset_aws_credentials
   unset DOMA_SYNC_JDBC_URL DOMA_SYNC_JDBC_USER DOMA_SYNC_JDBC_PASSWORD
   export DOMA_CODEGEN_DB_URL="$db_url" DOMA_CODEGEN_DB_USER="$db_user" DOMA_CODEGEN_DB_PASSWORD="$db_password"
   export DOMA_CODEGEN_DB_KIND="$database" DOMA_CODEGEN_DB_SCHEMA="$schema" DOMA_CODEGEN_DB_CATALOG="$catalog"
@@ -533,13 +601,20 @@ if [[ $snapshot_status -ne 0 ]]; then
 fi
 [[ -f "$snapshot_file" && ! -L "$snapshot_file" ]] || die "schema snapshot output is missing or unsafe" 70
 
-validate_output_paths || die "output path must remain inside the project build directory" 65
+prepare_generated_candidate
 set +e
 (
   cd -- "$project_root"
+  unset_aws_credentials
   unset DOMA_CODEGEN_DB_URL DOMA_CODEGEN_DB_USER DOMA_CODEGEN_DB_PASSWORD
+  unset ORG_GRADLE_PROJECT_domaCodegenDbUrl ORG_GRADLE_PROJECT_domaCodegenDbUser
+  unset ORG_GRADLE_PROJECT_domaCodegenDbPassword ORG_GRADLE_PROJECT_domaSyncJdbcUrl
+  unset ORG_GRADLE_PROJECT_domaSyncJdbcUser ORG_GRADLE_PROJECT_domaSyncJdbcPassword
+  unset GRADLE_OPTS
+  export GRADLE_USER_HOME="$isolated_gradle_home"
   export DOMA_SYNC_JDBC_URL="$db_url" DOMA_SYNC_JDBC_USER="$db_user" DOMA_SYNC_JDBC_PASSWORD="$db_password"
-  run_redacted "${gradle_command[@]}" --no-daemon domaCodeGenDomaSyncEntity
+  run_redacted "${gradle_command[@]}" --no-daemon --gradle-user-home "$isolated_gradle_home" \
+    domaCodeGenDomaSyncEntity
 )
 entity_status=$?
 set -e

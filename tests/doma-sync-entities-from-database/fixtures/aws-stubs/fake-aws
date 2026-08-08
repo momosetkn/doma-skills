@@ -13,6 +13,10 @@ if len(args) >= 2 and args[0] == "--profile":
 if len(args) < 2:
     raise SystemExit(90)
 service, operation = args[:2]
+if os.environ.get("FAKE_REQUIRE_AWS_ENV") == "true":
+    required = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
+    if any(not os.environ.get(name) for name in required):
+        raise SystemExit(95)
 allowed = {
     ("sts", "get-caller-identity"),
     ("rds", "describe-db-instances"),
@@ -30,6 +34,8 @@ if any(value and any(value in arg for arg in args) for value in secret_values):
     raise SystemExit(91)
 with open(os.environ["FAKE_CALL_LOG"], "a", encoding="utf-8") as handle:
     handle.write("aws|" + "|".join(args) + "\n")
+    if os.environ.get("FAKE_REQUIRE_AWS_ENV") == "true":
+        handle.write("aws-credential-env-present|" + service + "|" + operation + "\n")
 
 fixtures = Path(os.environ["FAKE_AWS_FIXTURES"])
 scenario = os.environ.get("FAKE_AWS_SCENARIO", "instance")
