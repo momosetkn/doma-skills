@@ -26,7 +26,7 @@ cleanup_secrets() {
   unset DOMA_CODEGEN_DB_PASSWORD DOMA_SYNC_JDBC_PASSWORD
   unset DOMA_REDACT_PASSWORD DOMA_REDACT_TOKEN
   if [[ -n "$isolated_gradle_home" && -d "$isolated_gradle_home" ]]; then
-    rm -rf -- "$isolated_gradle_home"
+    clean_external rm -rf -- "$isolated_gradle_home"
   fi
   unset isolated_gradle_home
 }
@@ -72,7 +72,10 @@ done
   || die "--database must be postgresql or mysql"
 [[ -d "$project_root_input" ]] || die "project root must be a directory"
 project_root=$(cd -- "$project_root_input" && pwd -P)
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+script_path=${BASH_SOURCE[0]}
+script_parent=.
+[[ "$script_path" != */* ]] || script_parent=${script_path%/*}
+script_dir=$(cd -- "$script_parent" && pwd -P)
 
 output_root="$project_root/build/doma-codegen"
 classpath_file="$output_root/codegen-classpath.txt"
@@ -86,6 +89,11 @@ unset_aws_credentials() {
   unset AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
   unset AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE AWS_PROFILE AWS_DEFAULT_PROFILE
 }
+
+clean_external() (
+  unset_aws_credentials
+  command "$@"
+)
 
 clean_python() (
   unset_aws_credentials
@@ -182,8 +190,8 @@ scan_or_remove_unsafe_outputs() {
   fi
   if ! scan_generated_outputs; then
     validate_output_paths || die "output path must remain inside the project build directory" 65
-    rm -rf -- "$generated_dir"
-    rm -f -- "$snapshot_file"
+    clean_external rm -rf -- "$generated_dir"
+    clean_external rm -f -- "$snapshot_file"
     die "generated output failed credential scan; candidate outputs were removed" 65
   fi
 }
@@ -336,9 +344,9 @@ else
   fi
 fi
 
-isolated_gradle_home=$(mktemp -d "${TMPDIR:-/tmp}/doma-sync-gradle-home.XXXXXX") \
+isolated_gradle_home=$(clean_external mktemp -d "${TMPDIR:-/tmp}/doma-sync-gradle-home.XXXXXX") \
   || die "could not create an isolated Gradle user home" 70
-chmod 700 "$isolated_gradle_home"
+clean_external chmod 700 "$isolated_gradle_home"
 
 if [[ -x "$project_root/gradlew" && ! -L "$project_root/gradlew" ]]; then
   gradle_command=("$project_root/gradlew")

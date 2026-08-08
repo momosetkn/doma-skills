@@ -18,7 +18,19 @@ AWS_SENTINELS = {
     "AWS_SECRET_ACCESS_KEY": "aws-secret-key-sentinel-4",
     "AWS_SESSION_TOKEN": "aws-session-token-sentinel-4",
     "AWS_SECURITY_TOKEN": "aws-security-token-sentinel-4",
+    "AWS_ACCESS_KEY": "aws-legacy-access-key-sentinel-4",
+    "AWS_SECRET_KEY": "aws-legacy-secret-key-sentinel-4",
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "/tmp/aws-web-identity-token-file-sentinel-4",
+    "AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/aws-role-sentinel-4",
+    "AWS_ROLE_SESSION_NAME": "aws-role-session-sentinel-4",
+    "AWS_SHARED_CREDENTIALS_FILE": "/tmp/aws-shared-credentials-file-sentinel-4",
+    "AWS_CONFIG_FILE": "/tmp/aws-config-file-sentinel-4",
+    "AWS_PROFILE": "aws-profile-sentinel-4",
+    "AWS_DEFAULT_PROFILE": "aws-default-profile-sentinel-4",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/aws-container-relative-uri-sentinel-4",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://127.0.0.1/aws-container-full-uri-sentinel-4",
     "AWS_CONTAINER_AUTHORIZATION_TOKEN": "aws-container-token-sentinel-4",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE": "/tmp/aws-container-token-file-sentinel-4",
 }
 
 
@@ -60,6 +72,13 @@ class GenerateWrapperTest(unittest.TestCase):
     def _install(source, target):
         shutil.copy2(source, target)
         target.chmod(target.stat().st_mode | stat.S_IXUSR)
+
+    def _instrument_non_aws_commands(self):
+        for name in ("dirname", "mktemp", "chmod", "rm", "python3"):
+            real_command = shutil.which(name, path=os.environ.get("PATH"))
+            self.assertIsNotNone(real_command, name)
+            self.env["FAKE_REAL_COMMAND_" + name.upper()] = real_command
+            self._install(FIXTURES / "fake-non-aws", self.bin / name)
 
     def _local_env(self):
         self.env.update({
@@ -371,10 +390,12 @@ class GenerateWrapperTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotIn(TOKEN, "\n".join(self._calls()))
 
-    def test_non_aws_children_do_not_inherit_standard_aws_credentials(self):
+    def test_every_non_aws_child_drops_all_aws_environment_categories(self):
+        self._instrument_non_aws_commands()
         self.env.update({
             **AWS_SENTINELS,
             "FAKE_LEAK_AWS_ENV": "true",
+            "FAKE_INSTRUMENT_NON_AWS": "true",
             "FAKE_REQUIRE_AWS_ENV": "true",
             "FAKE_AWS_SCENARIO": "instance",
             "EXPECTED_DB_URL": "jdbc:postgresql://db.example.test:5432/appdb?sslmode=verify-full",
@@ -391,6 +412,18 @@ class GenerateWrapperTest(unittest.TestCase):
             {"aws-env-clean|gradle|domaSyncWriteCodeGenClasspath", "aws-env-clean|java|snapshot",
              "aws-env-clean|gradle|domaCodeGenDomaSyncEntity"},
             set(clean_events),
+        )
+        non_aws_events = {
+            line for line in self._calls() if line.startswith("non-aws-env-clean|")
+        }
+        for expected in (
+            "non-aws-env-clean|mktemp", "non-aws-env-clean|chmod", "non-aws-env-clean|rm",
+            "non-aws-env-clean|python|helper", "non-aws-env-clean|python|redactor",
+        ):
+            self.assertIn(expected, non_aws_events, self._calls())
+        self.assertFalse(
+            any(line.startswith("non-aws-env-leak|") for line in self._calls()),
+            self._calls(),
         )
         self.assertTrue(any(line.startswith("aws-credential-env-present|sts|get-caller-identity")
                             for line in self._calls()))
