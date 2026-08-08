@@ -28,6 +28,17 @@ TEMPLATE_PROPERTY_ANNOTATIONS = {
     "org.seasar.doma.OriginalStates", "org.seasar.doma.SequenceGenerator",
     "org.seasar.doma.TableGenerator", "org.seasar.doma.Version",
 }
+TEMPLATE_ANNOTATION_ARGUMENT_ORDER = {
+    "org.seasar.doma.Entity": ("listener", "naming", "metamodel"),
+    "org.seasar.doma.Table": ("catalog", "schema", "name"),
+    "org.seasar.doma.Column": ("name",),
+    "org.seasar.doma.GeneratedValue": ("strategy",),
+    "org.seasar.doma.Id": (),
+    "org.seasar.doma.OriginalStates": (),
+    "org.seasar.doma.SequenceGenerator": ("sequence", "initialValue", "allocationSize"),
+    "org.seasar.doma.TableGenerator": ("pkColumnValue", "initialValue", "allocationSize"),
+    "org.seasar.doma.Version": (),
+}
 JAVA_MODIFIERS = {
     "abstract", "final", "native", "private", "protected", "public", "static",
     "strictfp", "synchronized", "transient", "volatile",
@@ -53,14 +64,17 @@ def find_java_domain_declarations(source: str) -> tuple[str, ...]:
         return ()
     tokens = tuple(token for token in all_tokens if token.kind not in TRIVIA)
     imports, _ = _parse_imports(source, tokens)
+    shadowed_annotations = _declared_annotation_names(tokens)
     package_name = _parse_package(tokens)
     declarations: list[str] = []
     brace = paren = bracket = 0
     for index, token in enumerate(tokens):
         text = token.text
-        if text in {"class", "record"} and brace == paren == bracket == 0:
+        if text in {"class", "enum", "record"} and brace == paren == bracket == 0:
             floor = _top_level_floor(tokens, index)
-            annotations, _, reasons = _annotations_in_range(source, tokens, floor, index, imports)
+            annotations, _, reasons = _annotations_in_range(
+                source, tokens, floor, index, imports, shadowed_annotations
+            )
             if not reasons and any(
                 annotation.qualified_name == "org.seasar.doma.Domain" for annotation in annotations
             ):
@@ -87,13 +101,14 @@ def parse_java(
     tokens = lex_java(source)
     significant = tuple(token for token in tokens if token.kind not in TRIVIA)
     imports, import_region = _parse_imports(source, significant)
+    shadowed_annotations = _declared_annotation_names(significant)
     package_name = _parse_package(significant)
     reasons: list[str] = []
     if any(token.kind == "ERROR" for token in tokens):
         reasons.append("unmatched lexical construct")
     reasons.extend(_line_ending_reasons(source))
 
-    candidates = _find_doma_types(source, significant, imports)
+    candidates = _find_doma_types(source, significant, imports, shadowed_annotations)
     if not candidates:
         raise JavaParseError("no top-level Doma entity or embeddable declaration")
     if len(candidates) > 1:
@@ -119,6 +134,7 @@ def parse_java(
         class_body = SourceSpan(significant[open_index].span.end, significant[close_index].span.start)
 
     class_annotations = candidate["annotations"]
+    reasons.extend(_non_template_annotation_argument_reasons(class_annotations, "class"))
     class_header_tokens = _tokens_outside_annotations(
         significant[candidate["declaration_floor"]:kind_index], class_annotations
     )
@@ -161,7 +177,9 @@ def parse_java(
         chunk = significant[chunk_start:chunk_end]
         if not chunk:
             continue
-        annotations, cursor, annotation_reasons = _leading_annotations(source, chunk, imports)
+        annotations, cursor, annotation_reasons = _leading_annotations(
+            source, chunk, imports, shadowed_annotations
+        )
         reasons.extend(annotation_reasons)
         for annotation in annotations:
             if annotation.qualified_name not in TEMPLATE_PROPERTY_ANNOTATIONS:
@@ -185,7 +203,7 @@ def parse_java(
         full_end = min(_line_end(source, chunk[-1].span.end), next_boundary, class_body.end)
 
         inline_annotations, _, inline_reasons = _annotations_in_range(
-            source, core, 0, len(core), imports
+            source, core, 0, len(core), imports, shadowed_annotations
         )
         reasons.extend(inline_reasons)
         classification_core = _tokens_outside_annotations(core, inline_annotations)
@@ -223,6 +241,9 @@ def parse_java(
             continue
         prop, modifiers, initializer = parsed_field
         properties.append(prop)
+        reasons.extend(_non_template_annotation_argument_reasons(
+            prop.annotations, "property " + prop.name
+        ))
         field_metadata[prop.name] = {
             "modifiers": modifiers,
             "documented": _is_codegen_property_doc(source[full_start:prop.declaration_span.start]),
@@ -335,13 +356,20 @@ def _parse_imports(source: str, tokens: Sequence[Token]) -> tuple[tuple[str, ...
     return tuple(imports), _bounded_line_region(source, first, last)
 
 
-def _find_doma_types(source: str, tokens: Sequence[Token], imports: tuple[str, ...]) -> list[dict[str, object]]:
+def _find_doma_types(
+    source: str,
+    tokens: Sequence[Token],
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str],
+) -> list[dict[str, object]]:
     candidates: list[dict[str, object]] = []
     brace_depth = paren_depth = bracket_depth = 0
     for index, token in enumerate(tokens):
         if token.text in {"class", "record"} and brace_depth == paren_depth == bracket_depth == 0:
             floor = _top_level_floor(tokens, index)
-            annotations, start, annotation_reasons = _annotations_in_range(source, tokens, floor, index, imports)
+            annotations, start, annotation_reasons = _annotations_in_range(
+                source, tokens, floor, index, imports, shadowed_annotations
+            )
             names = {annotation.qualified_name for annotation in annotations}
             if "org.seasar.doma.Entity" in names or "org.seasar.doma.Embeddable" in names:
                 if "org.seasar.doma.Embeddable" in names and "org.seasar.doma.Entity" not in names:
@@ -369,7 +397,12 @@ def _find_doma_types(source: str, tokens: Sequence[Token], imports: tuple[str, .
 
 
 def _annotations_in_range(
-    source: str, tokens: Sequence[Token], start: int, end: int, imports: tuple[str, ...]
+    source: str,
+    tokens: Sequence[Token],
+    start: int,
+    end: int,
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str] = frozenset(),
 ) -> tuple[tuple[AnnotationModel, ...], int, list[str]]:
     annotations: list[AnnotationModel] = []
     reasons: list[str] = []
@@ -379,7 +412,9 @@ def _annotations_in_range(
         if tokens[index].text != "@":
             index += 1
             continue
-        annotation, next_index, annotation_reasons = _parse_annotation(source, tokens, index, imports)
+        annotation, next_index, annotation_reasons = _parse_annotation(
+            source, tokens, index, imports, shadowed_annotations
+        )
         annotations.append(annotation)
         reasons.extend(annotation_reasons)
         first = min(first, index)
@@ -388,14 +423,19 @@ def _annotations_in_range(
 
 
 def _leading_annotations(
-    source: str, tokens: Sequence[Token], imports: tuple[str, ...]
+    source: str,
+    tokens: Sequence[Token],
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str] = frozenset(),
 ) -> tuple[tuple[AnnotationModel, ...], int, list[str]]:
     annotations: list[AnnotationModel] = []
     reasons: list[str] = []
     index = 0
     while index < len(tokens):
         if tokens[index].text == "@":
-            annotation, index, annotation_reasons = _parse_annotation(source, tokens, index, imports)
+            annotation, index, annotation_reasons = _parse_annotation(
+                source, tokens, index, imports, shadowed_annotations
+            )
             annotations.append(annotation)
             reasons.extend(annotation_reasons)
             continue
@@ -404,7 +444,11 @@ def _leading_annotations(
 
 
 def _parse_annotation(
-    source: str, tokens: Sequence[Token], start: int, imports: tuple[str, ...]
+    source: str,
+    tokens: Sequence[Token],
+    start: int,
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str] = frozenset(),
 ) -> tuple[AnnotationModel, int, list[str]]:
     index = start + 1
     parts: list[str] = []
@@ -419,7 +463,7 @@ def _parse_annotation(
             continue
         break
     raw_name = "".join(parts)
-    qualified_name, ambiguous = _resolve_annotation(raw_name, imports)
+    qualified_name, ambiguous = _resolve_annotation(raw_name, imports, shadowed_annotations)
     reasons = ["ambiguous annotation: " + raw_name] if ambiguous else []
     arguments: tuple[tuple[str, str], ...] = ()
     end = tokens[index - 1].span.end if index > start + 1 else tokens[start].span.end
@@ -451,6 +495,71 @@ def _annotation_arguments(
             value = source[tokens[equals + 1].span.start:tokens[piece_end - 1].span.end].strip()
         result.append((key, value))
     return tuple(result)
+
+
+def _non_template_annotation_argument_reasons(
+    annotations: Sequence[AnnotationModel], location: str
+) -> list[str]:
+    reasons: list[str] = []
+    for annotation in annotations:
+        if annotation.qualified_name not in TEMPLATE_ANNOTATION_ARGUMENT_ORDER:
+            continue
+        if _has_template_annotation_arguments(annotation):
+            continue
+        arguments = ", ".join(
+            key + "=" + value for key, value in annotation.arguments
+        ) or "<none>"
+        reasons.append(
+            "non-template annotation arguments: " + annotation.qualified_name
+            + " on " + location + " (" + arguments + ")"
+        )
+    return reasons
+
+
+def _has_template_annotation_arguments(annotation: AnnotationModel) -> bool:
+    qualified_name = annotation.qualified_name
+    allowed_order = TEMPLATE_ANNOTATION_ARGUMENT_ORDER[qualified_name]
+    keys = tuple(key for key, _ in annotation.arguments)
+    positions = tuple(allowed_order.index(key) for key in keys if key in allowed_order)
+    if len(positions) != len(keys) or positions != tuple(sorted(set(positions))):
+        return False
+    values = dict(annotation.arguments)
+    if qualified_name == "org.seasar.doma.Entity":
+        listener = values.get("listener")
+        naming = values.get("naming")
+        metamodel = values.get("metamodel")
+        if listener is not None and not listener.endswith((".class", "::class")):
+            return False
+        if naming is not None and naming.rsplit(".", 1)[-1] not in {
+            "LOWER_CASE", "SNAKE_LOWER_CASE", "SNAKE_UPPER_CASE", "UPPER_CASE",
+        }:
+            return False
+        return metamodel is None or metamodel in {"@Metamodel", "Metamodel()"}
+    if qualified_name == "org.seasar.doma.Table":
+        return bool(values) and all(_plain_string(value) is not None for value in values.values())
+    if qualified_name == "org.seasar.doma.Column":
+        return keys == ("name",) and bool(_plain_string(values["name"]))
+    if qualified_name == "org.seasar.doma.GeneratedValue":
+        return keys == ("strategy",) and values["strategy"].rsplit(".", 1)[-1] in {
+            "IDENTITY", "SEQUENCE", "TABLE",
+        }
+    if qualified_name == "org.seasar.doma.SequenceGenerator":
+        return _has_generator_arguments(values, keys, "sequence")
+    if qualified_name == "org.seasar.doma.TableGenerator":
+        return _has_generator_arguments(values, keys, "pkColumnValue")
+    return not annotation.arguments
+
+
+def _has_generator_arguments(
+    values: dict[str, str], keys: tuple[str, ...], required_name: str
+) -> bool:
+    if not keys or keys[0] != required_name or not _plain_string(values[required_name]):
+        return False
+    return all(
+        value.lstrip("-").isdigit()
+        for key, value in values.items()
+        if key in {"initialValue", "allocationSize"}
+    )
 
 
 def _table_identity(
@@ -631,6 +740,8 @@ def _generated_accessor(
     close_paren = _matching_index(tokens, open_paren, "(", ")")
     if close_paren is None:
         return None
+    if close_paren + 1 >= len(tokens) or tokens[close_paren + 1].text != "{":
+        return None
     header = tokens[:open_paren]
     if len(header) < 3 or header[0].text != "public" or header[-1].text != name:
         return None
@@ -700,7 +811,32 @@ def _is_codegen_property_doc(prefix: str) -> bool:
     return "\n" not in doc and "\r" not in doc
 
 
-def _resolve_annotation(name: str, imports: tuple[str, ...]) -> tuple[str, bool]:
+def _declared_annotation_names(tokens: Sequence[Token]) -> frozenset[str]:
+    names: set[str] = set()
+    brace = paren = bracket = 0
+    for index, token in enumerate(tokens):
+        if (
+            token.text == "@"
+            and brace == paren == bracket == 0
+            and index + 2 < len(tokens)
+            and tokens[index + 1].text == "interface"
+            and tokens[index + 2].kind == "IDENT"
+        ):
+            names.add(tokens[index + 2].text)
+        if token.text == "(": paren += 1
+        elif token.text == ")": paren = max(0, paren - 1)
+        elif token.text == "[": bracket += 1
+        elif token.text == "]": bracket = max(0, bracket - 1)
+        elif token.text == "{": brace += 1
+        elif token.text == "}": brace = max(0, brace - 1)
+    return frozenset(names)
+
+
+def _resolve_annotation(
+    name: str,
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str] = frozenset(),
+) -> tuple[str, bool]:
     if not name:
         return name, True
     first, separator, rest = name.partition(".")
@@ -712,6 +848,12 @@ def _resolve_annotation(name: str, imports: tuple[str, ...]) -> tuple[str, bool]
     if separator and first[:1].islower():
         return name, False
     wildcard = [value[:-2] + "." + name for value in imports if value.endswith(".*")]
+    if first in shadowed_annotations and wildcard:
+        if first in DOMA_ANNOTATIONS and any(
+            value.startswith("org.seasar.doma.") for value in wildcard
+        ):
+            return "org.seasar.doma." + name, True
+        return name, True
     if len(wildcard) == 1:
         return wildcard[0], False
     if first in DOMA_ANNOTATIONS:

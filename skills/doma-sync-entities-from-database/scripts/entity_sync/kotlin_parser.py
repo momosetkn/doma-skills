@@ -11,6 +11,7 @@ from .java_parser import (
     _line_ending_reasons,
     _line_start,
     _matching_index,
+    _non_template_annotation_argument_reasons,
     _plain_string,
     _split_indices,
     _top_level_floor,
@@ -59,6 +60,7 @@ def find_kotlin_domain_declarations(source: str) -> tuple[str, ...]:
         return ()
     tokens = tuple(token for token in all_tokens if token.kind not in TRIVIA)
     imports, _ = _parse_imports(source, tokens)
+    shadowed_annotations = _declared_annotation_names(tokens)
     package_name = _parse_package(source, tokens)
     declarations: list[str] = []
     brace = paren = bracket = 0
@@ -66,7 +68,9 @@ def find_kotlin_domain_declarations(source: str) -> tuple[str, ...]:
         text = token.text
         if text == "class" and brace == paren == bracket == 0:
             floor = _top_level_floor(tokens, index)
-            annotations, _, reasons = _annotations_in_range(source, tokens, floor, index, imports)
+            annotations, _, reasons = _annotations_in_range(
+                source, tokens, floor, index, imports, shadowed_annotations
+            )
             if not reasons and any(
                 annotation.qualified_name == "org.seasar.doma.Domain" for annotation in annotations
             ):
@@ -93,13 +97,14 @@ def parse_kotlin(
     tokens = lex_kotlin(source)
     significant = tuple(token for token in tokens if token.kind not in TRIVIA)
     imports, import_region = _parse_imports(source, significant)
+    shadowed_annotations = _declared_annotation_names(significant)
     package_name = _parse_package(source, significant)
     reasons: list[str] = []
     if any(token.kind == "ERROR" for token in tokens):
         reasons.append("unmatched lexical construct")
     reasons.extend(_line_ending_reasons(source))
 
-    candidates = _find_doma_types(source, significant, imports)
+    candidates = _find_doma_types(source, significant, imports, shadowed_annotations)
     if not candidates:
         raise KotlinParseError("no top-level Doma entity or embeddable declaration")
     if len(candidates) > 1:
@@ -128,6 +133,7 @@ def parse_kotlin(
             body_span = SourceSpan(significant[open_index].span.end, significant[close_index].span.start)
 
     class_annotations = candidate["annotations"]
+    reasons.extend(_non_template_annotation_argument_reasons(class_annotations, "class"))
     class_header_tokens = _tokens_outside_annotations(
         significant[candidate["declaration_floor"]:class_index], class_annotations
     )
@@ -162,7 +168,8 @@ def parse_kotlin(
             reasons.append("unmatched primary constructor")
         else:
             constructor_properties, constructor_reasons, constructor_custom = _parse_constructor_properties(
-                source, significant, constructor_open + 1, constructor_close, imports
+                source, significant, constructor_open + 1, constructor_close, imports,
+                shadowed_annotations,
             )
             properties.extend(constructor_properties)
             reasons.extend(constructor_reasons)
@@ -186,11 +193,13 @@ def parse_kotlin(
         body_end = close_index if close_index is not None else len(significant)
         member_floor = significant[open_index].span.end
         chunks = _member_chunks(
-            source, significant, open_index + 1, body_end, imports
+            source, significant, open_index + 1, body_end, imports, shadowed_annotations
         )
         for chunk_position, (chunk_start, base_end, chunk_end, kind) in enumerate(chunks):
             chunk = significant[chunk_start:chunk_end]
-            annotations, cursor, annotation_reasons = _leading_annotations(source, chunk, imports)
+            annotations, cursor, annotation_reasons = _leading_annotations(
+                source, chunk, imports, shadowed_annotations
+            )
             reasons.extend(annotation_reasons)
             core = chunk[cursor:]
             if not core:
@@ -216,10 +225,13 @@ def parse_kotlin(
             if kind == "property":
                 base_count = base_end - chunk_start
                 base_tokens = chunk[:base_count]
-                base_annotations, base_cursor, _ = _leading_annotations(source, base_tokens, imports)
+                base_annotations, base_cursor, _ = _leading_annotations(
+                    source, base_tokens, imports, shadowed_annotations
+                )
                 property_tokens = base_tokens[base_cursor:]
                 inline_annotations, _, inline_reasons = _annotations_in_range(
-                    source, property_tokens, 0, len(property_tokens), imports
+                    source, property_tokens, 0, len(property_tokens), imports,
+                    shadowed_annotations,
                 )
                 reasons.extend(inline_reasons)
                 if inline_annotations:
@@ -245,6 +257,9 @@ def parse_kotlin(
                 else:
                     prop, declaration_kind, initializer, delegated, modifiers = parsed_property
                     properties.append(prop)
+                    reasons.extend(_non_template_annotation_argument_reasons(
+                        prop.annotations, "property " + prop.name
+                    ))
                     generated_default = _is_codegen_default(prop.type_name, prop.nullable, initializer)
                     property_metadata[prop.name] = {
                         "kind": declaration_kind,
@@ -373,14 +388,21 @@ def _parse_imports(source: str, tokens: Sequence[Token]) -> tuple[tuple[str, ...
     return tuple(imports), _bounded_line_region(source, first, last)
 
 
-def _find_doma_types(source: str, tokens: Sequence[Token], imports: tuple[str, ...]) -> list[dict[str, object]]:
+def _find_doma_types(
+    source: str,
+    tokens: Sequence[Token],
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str],
+) -> list[dict[str, object]]:
     candidates: list[dict[str, object]] = []
     brace = paren = bracket = 0
     for index, token in enumerate(tokens):
         text = token.text
         if text == "class" and brace == paren == bracket == 0:
             floor = _top_level_floor(tokens, index)
-            annotations, start, annotation_reasons = _annotations_in_range(source, tokens, floor, index, imports)
+            annotations, start, annotation_reasons = _annotations_in_range(
+                source, tokens, floor, index, imports, shadowed_annotations
+            )
             names = {annotation.qualified_name for annotation in annotations}
             if "org.seasar.doma.Entity" in names or "org.seasar.doma.Embeddable" in names:
                 declaration_floor = start
@@ -409,7 +431,12 @@ def _find_doma_types(source: str, tokens: Sequence[Token], imports: tuple[str, .
 
 
 def _annotations_in_range(
-    source: str, tokens: Sequence[Token], start: int, end: int, imports: tuple[str, ...]
+    source: str,
+    tokens: Sequence[Token],
+    start: int,
+    end: int,
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str] = frozenset(),
 ) -> tuple[tuple[AnnotationModel, ...], int, list[str]]:
     annotations: list[AnnotationModel] = []
     reasons: list[str] = []
@@ -419,7 +446,9 @@ def _annotations_in_range(
         if tokens[index].text != "@":
             index += 1
             continue
-        annotation, next_index, annotation_reasons = _parse_annotation(source, tokens, index, imports)
+        annotation, next_index, annotation_reasons = _parse_annotation(
+            source, tokens, index, imports, shadowed_annotations
+        )
         annotations.append(annotation)
         reasons.extend(annotation_reasons)
         first = min(first, index)
@@ -428,20 +457,29 @@ def _annotations_in_range(
 
 
 def _leading_annotations(
-    source: str, tokens: Sequence[Token], imports: tuple[str, ...]
+    source: str,
+    tokens: Sequence[Token],
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str] = frozenset(),
 ) -> tuple[tuple[AnnotationModel, ...], int, list[str]]:
     annotations: list[AnnotationModel] = []
     reasons: list[str] = []
     index = 0
     while index < len(tokens) and tokens[index].text == "@":
-        annotation, index, annotation_reasons = _parse_annotation(source, tokens, index, imports)
+        annotation, index, annotation_reasons = _parse_annotation(
+            source, tokens, index, imports, shadowed_annotations
+        )
         annotations.append(annotation)
         reasons.extend(annotation_reasons)
     return tuple(annotations), index, reasons
 
 
 def _parse_annotation(
-    source: str, tokens: Sequence[Token], start: int, imports: tuple[str, ...]
+    source: str,
+    tokens: Sequence[Token],
+    start: int,
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str] = frozenset(),
 ) -> tuple[AnnotationModel, int, list[str]]:
     index = start + 1
     use_site: str | None = None
@@ -460,7 +498,7 @@ def _parse_annotation(
             continue
         break
     raw_name = "".join(parts)
-    qualified_name, ambiguous = _resolve_annotation(raw_name, imports)
+    qualified_name, ambiguous = _resolve_annotation(raw_name, imports, shadowed_annotations)
     reasons = ["ambiguous annotation: " + raw_name] if ambiguous else []
     if use_site is not None:
         reasons.append("annotation use-site target: " + use_site)
@@ -501,6 +539,7 @@ def _parse_constructor_properties(
     start: int,
     end: int,
     imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str],
 ) -> tuple[list[PropertyModel], list[str], list[str]]:
     properties: list[PropertyModel] = []
     reasons: list[str] = []
@@ -509,7 +548,9 @@ def _parse_constructor_properties(
         if piece_start >= piece_end:
             continue
         piece = tokens[piece_start:piece_end]
-        annotations, cursor, annotation_reasons = _leading_annotations(source, piece, imports)
+        annotations, cursor, annotation_reasons = _leading_annotations(
+            source, piece, imports, shadowed_annotations
+        )
         reasons.extend(annotation_reasons)
         declaration_index = next(
             (index for index in range(cursor, len(piece)) if piece[index].text in {"val", "var"}), None
@@ -519,7 +560,7 @@ def _parse_constructor_properties(
             continue
         property_tokens = piece[declaration_index:]
         inline_annotations, _, inline_reasons = _annotations_in_range(
-            source, property_tokens, 0, len(property_tokens), imports
+            source, property_tokens, 0, len(property_tokens), imports, shadowed_annotations
         )
         reasons.extend(inline_reasons)
         if inline_annotations:
@@ -532,6 +573,9 @@ def _parse_constructor_properties(
             continue
         property_model, _, initializer, delegated, _ = prop
         properties.append(property_model)
+        reasons.extend(_non_template_annotation_argument_reasons(
+            property_model.annotations, "property " + property_model.name
+        ))
         reasons.append("kotlin primary-constructor property: " + property_model.name)
         if initializer or delegated:
             reasons.append("complex constructor change: " + property_model.name)
@@ -632,6 +676,7 @@ def _member_chunks(
     start: int,
     end: int,
     imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str],
 ) -> tuple[tuple[int, int, int, str], ...]:
     chunks: list[tuple[int, int, int, str]] = []
     index = start
@@ -640,7 +685,9 @@ def _member_chunks(
         cursor = index
         while cursor < end:
             if tokens[cursor].text == "@":
-                _, cursor, _ = _parse_annotation(source, tokens, cursor, imports)
+                _, cursor, _ = _parse_annotation(
+                    source, tokens, cursor, imports, shadowed_annotations
+                )
             elif tokens[cursor].text in KOTLIN_MODIFIERS:
                 cursor += 1
             else:
@@ -865,7 +912,32 @@ def _find_body_open(source: str, tokens: Sequence[Token], start: int) -> int | N
     return None
 
 
-def _resolve_annotation(name: str, imports: tuple[str, ...]) -> tuple[str, bool]:
+def _declared_annotation_names(tokens: Sequence[Token]) -> frozenset[str]:
+    names: set[str] = set()
+    brace = paren = bracket = 0
+    for index, token in enumerate(tokens):
+        if (
+            token.text == "annotation"
+            and brace == paren == bracket == 0
+            and index + 2 < len(tokens)
+            and tokens[index + 1].text == "class"
+            and tokens[index + 2].kind == "IDENT"
+        ):
+            names.add(_identifier(tokens[index + 2].text))
+        if token.text == "(": paren += 1
+        elif token.text == ")": paren = max(0, paren - 1)
+        elif token.text == "[": bracket += 1
+        elif token.text == "]": bracket = max(0, bracket - 1)
+        elif token.text == "{": brace += 1
+        elif token.text == "}": brace = max(0, brace - 1)
+    return frozenset(names)
+
+
+def _resolve_annotation(
+    name: str,
+    imports: tuple[str, ...],
+    shadowed_annotations: frozenset[str] = frozenset(),
+) -> tuple[str, bool]:
     if not name:
         return name, True
     first, separator, rest = name.partition(".")
@@ -887,6 +959,12 @@ def _resolve_annotation(name: str, imports: tuple[str, ...]) -> tuple[str, bool]
     if separator and first[:1].islower():
         return name, False
     wildcard = [value[:-2] + "." + name for value in direct if value.endswith(".*")]
+    if first in shadowed_annotations and wildcard:
+        if first in DOMA_ANNOTATIONS and any(
+            value.startswith("org.seasar.doma.") for value in wildcard
+        ):
+            return "org.seasar.doma." + name, True
+        return name, True
     if len(wildcard) == 1:
         return wildcard[0], False
     if first in DOMA_ANNOTATIONS:

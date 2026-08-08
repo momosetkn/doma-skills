@@ -127,6 +127,27 @@ class SourceModelTests(unittest.TestCase):
             self.assertIn(prop.name, source[prop.declaration_span.start:prop.declaration_span.end])
             self.assertTrue(source[prop.full_span.start:prop.full_span.end].lstrip().startswith("/**"))
 
+    def test_java_accessors_with_clauses_before_the_body_are_handwritten(self) -> None:
+        source = """import org.seasar.doma.*;
+/** */
+@Entity @Table(name = "employee")
+public class Employee {
+  /** */ @Column(name = "name") String name;
+  /** Returns the name. */
+  public String getName() throws RuntimeException { return name; }
+  /** Sets the name. */
+  public void setName(String name) throws RuntimeException { this.name = name; }
+}
+"""
+
+        entity = parse_java(source, path="Employee.java").entity
+        self.assertEqual((None, None), tuple(
+            method.generated_accessor_for for method in entity.methods
+        ))
+        self.assertIn("handwritten method: getName", entity.unsupported_reasons)
+        self.assertIn("handwritten method: setName", entity.unsupported_reasons)
+        self.assertFalse(entity.generated_only)
+
     def test_java_annotation_arguments_ids_special_mappings_and_domain_types_are_preserved(self) -> None:
         source = (FIXTURES / "semantics-java.java").read_text(encoding="utf-8")
         parsed = parse_java(
@@ -180,6 +201,31 @@ class SourceModelTests(unittest.TestCase):
         ambiguous = """@Entity class Maybe {}\n"""
         reasons = parse_java(ambiguous, path="Maybe.java").entity.unsupported_reasons
         self.assertIn("ambiguous annotation: Entity", reasons)
+
+    def test_same_file_annotation_declaration_shadows_doma_wildcard_import(self) -> None:
+        java = """package example;
+import org.seasar.doma.*;
+@interface Entity {}
+/** */
+@Entity @Table(name = "employee")
+public class Employee {
+  /** */ @Column(name = "id") public Long id;
+}
+"""
+        kotlin = """package example
+import org.seasar.doma.*
+annotation class Entity
+/** */
+@Entity @Table(name = "employee")
+class Employee {
+  /** */ @Column(name = "id") var id: Long = -1L
+}
+"""
+
+        for parsed in (parse_java(java, path="Employee.java"), parse_kotlin(kotlin, path="Employee.kt")):
+            with self.subTest(language=parsed.entity.language):
+                self.assertIn("ambiguous annotation: Entity", parsed.entity.unsupported_reasons)
+                self.assertFalse(parsed.entity.generated_only)
 
     def test_java_duplicate_columns_crlf_and_missing_final_newline_are_preserved(self) -> None:
         source = (
@@ -295,6 +341,27 @@ class SourceModelTests(unittest.TestCase):
         self.assertEqual((), find_java_domain_declarations("@Domain(valueType = String.class) class Ambiguous {}"))
         self.assertEqual((), find_kotlin_domain_declarations("@Domain(valueType = String::class) class Ambiguous"))
 
+    def test_java_enum_domain_declaration_blocks_generated_only_entity_classification(self) -> None:
+        domain_source = """package example;
+import org.seasar.doma.Domain;
+@Domain(valueType = String.class)
+public enum Money { VALUE }
+"""
+        entity_source = """package example;
+import org.seasar.doma.*;
+/** */
+@Entity @Table(name = "wallet")
+public class Wallet {
+  /** */ @Column(name = "amount") public Money amount;
+}
+"""
+
+        domains = find_java_domain_declarations(domain_source)
+        self.assertEqual(("example.Money",), domains)
+        entity = parse_java(entity_source, path="Wallet.java", domain_types=domains).entity
+        self.assertIn("domain-typed property: amount", entity.unsupported_reasons)
+        self.assertFalse(entity.generated_only)
+
     def test_java_nested_and_anonymous_edit_targets_and_unmatched_body_fail_closed(self) -> None:
         source = """import org.seasar.doma.*;\n@Entity @Table(name = \"holder\") class Holder {\n  Runnable task = new Runnable() { public void run() {} };\n  static class Nested {}\n}\n"""
         reasons = parse_java(source, path="Holder.java").entity.unsupported_reasons
@@ -326,6 +393,42 @@ class SourceModelTests(unittest.TestCase):
         self.assertEqual("id", kotlin_entity.properties[0].column)
         self.assertIn("ambiguous @Column name: id", java_entity.unsupported_reasons)
         self.assertIn("ambiguous @Column name: id", kotlin_entity.unsupported_reasons)
+
+    def test_non_template_doma_annotation_arguments_fail_closed_and_are_retained(self) -> None:
+        java = """import org.seasar.doma.*;
+/** */
+@Entity(metamodel = @Metamodel) @Table(name = "x", quote = true)
+public class X {
+  /** */ @Column(name = "id", updatable = false) public Long id;
+}
+"""
+        kotlin = """import org.seasar.doma.*
+/** */
+@Entity(metamodel = Metamodel()) @Table(name = "x", quote = true)
+class X {
+  /** */ @Column(name = "id", updatable = false) var id: Long = -1L
+}
+"""
+
+        for parsed in (parse_java(java, path="X.java"), parse_kotlin(kotlin, path="X.kt")):
+            with self.subTest(language=parsed.entity.language):
+                entity = parsed.entity
+                column = next(
+                    annotation for annotation in entity.properties[0].annotations
+                    if annotation.qualified_name == "org.seasar.doma.Column"
+                )
+                self.assertEqual((("name", '"id"'), ("updatable", "false")), column.arguments)
+                self.assertIn(
+                    'non-template annotation arguments: org.seasar.doma.Table on class '
+                    '(name="x", quote=true)',
+                    entity.unsupported_reasons,
+                )
+                self.assertIn(
+                    'non-template annotation arguments: org.seasar.doma.Column on property id '
+                    '(name="id", updatable=false)',
+                    entity.unsupported_reasons,
+                )
+                self.assertFalse(entity.generated_only)
 
     def test_handwritten_multiline_property_docs_never_classify_as_codegen_only(self) -> None:
         java = """import org.seasar.doma.*;\n/** Handwritten entity. */\n@Entity @Table(name = \"x\") public class X {\n  /**\n   * Application-owned meaning.\n   */\n  @Column(name = \"value\") public String value;\n}\n"""
