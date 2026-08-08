@@ -46,7 +46,7 @@ class SchemaSnapshotTest(unittest.TestCase):
             if key.startswith("DOMA_CODEGEN_"):
                 env.pop(key)
         env.update({
-            "DOMA_CODEGEN_DB_URL": url or f"jdbc:fixture:{database}",
+            "DOMA_CODEGEN_DB_URL": url or f"jdbc:{database}:fixture",
             "DOMA_CODEGEN_DB_USER": "fixture-user-sentinel",
             "DOMA_CODEGEN_DB_PASSWORD": "fixture-password-sentinel",
             "DOMA_CODEGEN_DB_KIND": database,
@@ -131,7 +131,7 @@ class SchemaSnapshotTest(unittest.TestCase):
         self.assertEqual(first, snapshot.read_bytes())
 
     def test_credential_bearing_url_is_rejected_without_echo(self) -> None:
-        secret_url = "jdbc:fixture:postgresql://url-user-sentinel:url-password-sentinel@fixture-host-sentinel/db"
+        secret_url = "jdbc:postgresql://url-user-sentinel:url-password-sentinel@fixture-host-sentinel/db"
         result = self.run_snapshot(url=secret_url)
         self.assertNotEqual(0, result.returncode)
         self.assertIn("DOMA_CODEGEN_DB_URL", result.stderr)
@@ -144,7 +144,7 @@ class SchemaSnapshotTest(unittest.TestCase):
         manifest = (self.work_path / "project/build/doma-codegen/schema-snapshot.json").read_text()
         for sentinel in ("fixture-user-sentinel", "fixture-password-sentinel", "fixture-host-sentinel"):
             self.assertNotIn(sentinel, manifest)
-        result = self.run_snapshot(database="mysql", url="jdbc:fixture:postgresql")
+        result = self.run_snapshot(database="mysql", schema=None, catalog="fixture_catalog", url="jdbc:postgresql:fixture")
         self.assertNotEqual(0, result.returncode)
         for sentinel in ("fixture-user-sentinel", "fixture-password-sentinel", "fixture-host-sentinel"):
             self.assertNotIn(sentinel, result.stdout + result.stderr)
@@ -158,6 +158,31 @@ class SchemaSnapshotTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("DOMA_CODEGEN_SCHEMA_SNAPSHOT", result.stderr)
         self.assertFalse((self.work_path / "outside.json").exists())
+
+    def test_url_family_mismatch_is_rejected_without_echoing_url(self) -> None:
+        mismatched_url = "jdbc:postgresql://fixture-host-sentinel/mysql"
+        result = self.run_snapshot(
+            database="mysql", schema=None, catalog="fixture_catalog", url=mismatched_url)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("DOMA_CODEGEN_DB_URL", result.stderr)
+        self.assertNotIn(mismatched_url, result.stdout + result.stderr)
+        self.assertNotIn("fixture-host-sentinel", result.stdout + result.stderr)
+
+    def test_driver_exception_with_connection_sentinels_is_redacted(self) -> None:
+        result = self.run_snapshot(
+            url="jdbc:postgresql:fixture-host-sentinel",
+            extra_env={"FIXTURE_JDBC_THROW": "true"},
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("database metadata: read failed\n", result.stderr)
+        self.assertIn("connectionProperties|accepted", self.load_calls())
+        for sentinel in (
+            "jdbc:postgresql:fixture-host-sentinel",
+            "fixture-host-sentinel",
+            "fixture-user-sentinel",
+            "fixture-password-sentinel",
+        ):
+            self.assertNotIn(sentinel, result.stdout + result.stderr)
 
     def test_source_compiles_without_xlint_warnings(self) -> None:
         classes = self.work_path / "lint-classes"

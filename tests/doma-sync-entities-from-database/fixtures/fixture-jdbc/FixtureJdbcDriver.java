@@ -36,9 +36,25 @@ public final class FixtureJdbcDriver implements Driver {
 
   @Override public Connection connect(String url, Properties info) throws SQLException {
     if (!acceptsURL(url)) return null;
+    if (Boolean.parseBoolean(System.getenv("FIXTURE_JDBC_THROW"))) {
+      if (!"fixture-user-sentinel".equals(info.getProperty("user"))
+          || !"fixture-password-sentinel".equals(info.getProperty("password"))) {
+        record("connectionProperties|rejected");
+        writeCalls();
+        throw new SQLException("fixture connection properties were not supplied");
+      }
+      record("connectionProperties|accepted");
+      writeCalls();
+      throw new SQLException("fixture connection failed url=" + url
+          + " host=fixture-host-sentinel user=" + info.getProperty("user")
+          + " password=" + info.getProperty("password"));
+    }
     return proxy(Connection.class, new ConnectionHandler(url));
   }
-  @Override public boolean acceptsURL(String url) { return "jdbc:fixture:postgresql".equals(url) || "jdbc:fixture:mysql".equals(url); }
+  @Override public boolean acceptsURL(String url) {
+    return "jdbc:fixture:postgresql".equals(url) || "jdbc:fixture:mysql".equals(url)
+        || url.startsWith("jdbc:postgresql:") || url.startsWith("jdbc:mysql:");
+  }
   @Override public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) { return new DriverPropertyInfo[0]; }
   @Override public int getMajorVersion() { return 1; }
   @Override public int getMinorVersion() { return 0; }
@@ -111,8 +127,8 @@ public final class FixtureJdbcDriver implements Driver {
   }
 
   private static List<Map<String, Object>> tables(String url) {
-    String catalog = url.endsWith("mysql") ? "fixture_catalog" : null;
-    String schema = url.endsWith("postgresql") ? "public" : null;
+    String catalog = isMysql(url) ? "fixture_catalog" : null;
+    String schema = isPostgresql(url) ? "public" : null;
     return Arrays.asList(row("TABLE_CAT", catalog, "TABLE_SCHEM", schema, "TABLE_NAME", "tenant_zebra", "TABLE_TYPE", "TABLE", "REMARKS", "zebra"),
         row("TABLE_CAT", catalog, "TABLE_SCHEM", schema, "TABLE_NAME", "outside_scope", "TABLE_TYPE", "TABLE", "REMARKS", "outside"),
         row("TABLE_CAT", catalog, "TABLE_SCHEM", schema, "TABLE_NAME", "tenant_alpha", "TABLE_TYPE", "TABLE", "REMARKS", "alpha"));
@@ -132,6 +148,8 @@ public final class FixtureJdbcDriver implements Driver {
     if (table.equals("tenant_zebra")) return Arrays.asList(row("PK_NAME", "tenant_zebra_pkey", "COLUMN_NAME", "part_b", "KEY_SEQ", 2), row("PK_NAME", "tenant_zebra_pkey", "COLUMN_NAME", "part_a", "KEY_SEQ", 1));
     return List.of();
   }
+  private static boolean isPostgresql(String url) { return url.equals("jdbc:fixture:postgresql") || url.startsWith("jdbc:postgresql:"); }
+  private static boolean isMysql(String url) { return url.equals("jdbc:fixture:mysql") || url.startsWith("jdbc:mysql:"); }
   private static Map<String, Object> row(Object... values) { Map<String, Object> row = new HashMap<>(); for (int i = 0; i < values.length; i += 2) row.put((String) values[i], values[i + 1]); return row; }
   private static void record(String name, Object... values) { StringBuilder line = new StringBuilder(name); for (Object value : values) line.append('|').append(value == null ? "null" : value); CALLS.add(line.toString()); }
   private static void forbidden(String name) { CALLS.add("forbidden|" + name); writeCalls(); throw new AssertionError("forbidden connection method"); }

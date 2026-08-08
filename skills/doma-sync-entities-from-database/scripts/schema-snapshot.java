@@ -223,7 +223,7 @@ final class SchemaSnapshot {
         if (schema != null) throw invalid(SCHEMA, "must be empty for mysql");
       }
       if (containsCredentials(url)) throw invalid(URL, "must not contain credentials");
-      if (!url.toLowerCase().contains(kind)) throw invalid(URL, "does not match database kind");
+      if (!hasExpectedFamily(url, kind)) throw invalid(URL, "does not match database kind");
       Pattern compiled;
       try { compiled = Pattern.compile(patternText); }
       catch (PatternSyntaxException exception) { throw invalid(TABLE_PATTERN, "is not a valid regex"); }
@@ -261,6 +261,11 @@ final class SchemaSnapshot {
         if (host.contains("@")) return true;
       }
       return lowered.matches(".*[?&](?:password|passwd|pwd|token|access[_-]?key|secret)=[^&]*.*");
+    }
+    private static boolean hasExpectedFamily(String url, String kind) {
+      String lowered = url.toLowerCase();
+      return kind.equals("postgresql") ? lowered.startsWith("jdbc:postgresql:")
+          : lowered.startsWith("jdbc:mysql:");
     }
     private static InputException invalid(String field, String reason) { return new InputException(field + ": " + reason); }
   }
