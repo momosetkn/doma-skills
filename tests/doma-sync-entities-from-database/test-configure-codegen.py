@@ -182,6 +182,7 @@ domaCodeGen { register("domaSync") { url.set("jdbc:postgresql://host/db") } }
             content = build.read_bytes()
             self.assertIn(b"\r\n", content)
             self.assertNotIn(b"\n", content.replace(b"\r\n", b""))
+            self.assertNotIn(b"\r\r\n", content)
             planned = run_configurator(project, *self.plan_args())
             self.assertEqual(0, planned.returncode, planned.stderr)
 
@@ -215,6 +216,41 @@ dependencies {
             self.assertIn('domaCodeGen("org.postgresql:postgresql:42.7.10")', text)
             self.assertNotIn("3.1.0", text)
             self.assertNotIn("42.7.9", text)
+
+    def test_existing_groovy_codegen_plugin_is_not_duplicated(self) -> None:
+        directory, project = self.make_project("build.gradle")
+        with directory:
+            build = project / "build.gradle"
+            build.write_text("""plugins {
+    id 'org.domaframework.doma.codegen' version '3.2.2'
+}
+dependencies {
+    domaCodeGen 'org.postgresql:postgresql:42.7.10'
+}
+""", encoding="utf-8")
+            plan = self.create_plan(project)
+            self.assertEqual(0, run_configurator(project, "apply", "--plan", str(plan)).returncode)
+            text = build.read_text(encoding="utf-8")
+            self.assertEqual(1, text.count("id 'org.domaframework.doma.codegen'"))
+            self.assertEqual(0, run_configurator(project, *self.plan_args()).returncode)
+
+    def test_mismatched_groovy_codegen_plugin_is_repaired(self) -> None:
+        directory, project = self.make_project("build.gradle")
+        with directory:
+            build = project / "build.gradle"
+            build.write_text("""plugins {
+    id 'org.domaframework.doma.codegen' version '3.1.0'
+}
+dependencies {
+    domaCodeGen 'org.postgresql:postgresql:42.7.10'
+}
+""", encoding="utf-8")
+            plan = self.create_plan(project)
+            self.assertEqual(0, run_configurator(project, "apply", "--plan", str(plan)).returncode)
+            text = build.read_text(encoding="utf-8")
+            self.assertEqual(1, text.count("id 'org.domaframework.doma.codegen'"))
+            self.assertIn("id 'org.domaframework.doma.codegen' version '3.2.2'", text)
+            self.assertNotIn("3.1.0", text)
 
     def test_gradle_7_wrapper_stops_without_write(self) -> None:
         directory, project = self.make_project()

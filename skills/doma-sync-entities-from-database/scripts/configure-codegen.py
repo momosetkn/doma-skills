@@ -359,7 +359,10 @@ def _add_to_block(source: str, span: BuildSpan | None, name: str, line: str) -> 
 
 def _matching_declarations(source: str, spec: BuildSpec, kind: Literal["plugin", "driver"]) -> list[re.Match[str]]:
     if kind == "plugin":
-        pattern = r'\bid\(\s*["\']org\.domaframework\.doma\.codegen["\']\s*\)\s*version\s*["\'][^"\']+["\']'
+        pattern = (
+            r'\bid\(\s*["\']org\.domaframework\.doma\.codegen["\']\s*\)\s*version\s*["\'][^"\']+["\']'
+            r'|\bid\s+["\']org\.domaframework\.doma\.codegen["\']\s+version\s+["\'][^"\']+["\']'
+        )
     elif spec.dsl == "kotlin":
         pattern = r'\bdomaCodeGen\s*\(\s*"[^"]+"\s*\)'
     else:
@@ -400,11 +403,10 @@ def _edits_for(spec: BuildSpec, source: str, metamodel: bool) -> tuple[TextEdit,
         edits.append(TextEdit(match.start(), match.end(), _driver_declaration(spec)))
     rendered = _kotlin_managed(spec, metamodel) if spec.dsl == "kotlin" else _groovy_managed(spec, metamodel)
     newline = "\r\n" if "\r\n" in source else "\n"
-    if newline != "\n":
-        rendered = rendered.replace("\n", newline)
+    rendered_for_source = rendered.replace("\n", newline)
     if managed is None:
         edits.append(TextEdit(len(source), len(source), "\n" + rendered + "\n"))
-    elif source[managed.start:managed.end] != rendered:
+    elif source[managed.start:managed.end] != rendered_for_source:
         edits.append(TextEdit(managed.start, managed.end, rendered))
     normalized_edits = tuple(
         TextEdit(edit.start, edit.end, edit.replacement.replace("\n", newline)) for edit in edits
