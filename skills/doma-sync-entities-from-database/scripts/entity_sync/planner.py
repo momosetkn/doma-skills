@@ -30,6 +30,7 @@ from .model import AnnotationModel, EntityModel, ParsedEntity, PropertyModel, So
 
 PLAN_FORMAT_VERSION = 1
 SNAPSHOT_PATH = "build/doma-codegen/schema-snapshot.json"
+_FINDING_ID_MARKER = "{finding_id}"
 _STATUS = {"SAFE", "REVIEW_REQUIRED", "BLOCKED"}
 _EDIT_KINDS = {"create", "insert", "replace", "delete"}
 _SOURCE_SUFFIXES = {".java": "java", ".kt": "kotlin"}
@@ -559,7 +560,9 @@ def _compare_entity(
             )
             findings.append(_make_finding(
                 status, kind, path, table.identity, new_prop.column,
-                {**database_base, "column": column}, old_prop.type_name, new_prop.type_name,
+                {**database_base, "column": column},
+                _property_with_accessors(existing, old_prop),
+                _property_with_accessors(candidate, new_prop),
                 "The generated database type widens a generated-only basic property."
                 if status == "SAFE" else
                 "The type change may alter application assignments or uses.",
@@ -568,14 +571,26 @@ def _compare_entity(
             ))
 
         if old.language == "kotlin" and old_prop.nullable != new_prop.nullable:
-            edits = _type_change_edits(existing, candidate, old_prop, new_prop)
+            edits = _kotlin_property_declaration_edits(existing, candidate, old_prop, new_prop)
             findings.append(_make_finding(
                 "REVIEW_REQUIRED", "kotlin-nullability", path, table.identity, new_prop.column,
-                {**database_base, "column": column}, str(old_prop.nullable), str(new_prop.nullable),
+                {**database_base, "column": column},
+                _property_excerpt(old_source, old_prop),
+                _property_excerpt(new_source, new_prop),
                 "Kotlin nullability changes the application type even when database metadata is exact.",
-                "Review callers, then approve this exact nullable type proposal.", edits,
+                "Review callers, then approve this exact generated property declaration.", edits,
             ))
 
+        if not _database_comment_matches_snapshot(candidate, new_prop, column.get("remarks")):
+            findings.append(_make_finding(
+                "BLOCKED", "database-comment-mismatch", path, table.identity, new_prop.column,
+                {**database_base, "column": column},
+                _doc_prefix(old_source, old_prop)[1] or None,
+                _doc_prefix(new_source, new_prop)[1] or None,
+                "The generated property documentation does not match the authoritative database remarks.",
+                "Regenerate the candidate from this exact snapshot before applying documentation.", (),
+            ))
+            continue
         doc_edit = _database_comment_edit(existing, candidate, old_prop, new_prop)
         if doc_edit is not None:
             findings.append(_make_finding(
@@ -627,7 +642,7 @@ def _new_entity_finding(
     return _make_finding(
         "SAFE", "create-entity", target_path, table.identity, None,
         {"table": table.raw, "existing_root": _relative(root, eligible[0]),
-         "generated_path": candidate.file.path},
+         "generated_root": candidate.file.root, "generated_path": candidate.file.path},
         None, candidate.parsed.source,
         "The table, generated entity, language, package path, and source root are unique.",
         "Create the generated entity without deleting or renaming any existing type.", (edit,),
@@ -802,6 +817,21 @@ def _type_change_edits(
     return tuple(_dedupe_edits(edits))
 
 
+def _kotlin_property_declaration_edits(
+    existing: _ParsedFile,
+    candidate: _ParsedFile,
+    old_prop: PropertyModel,
+    new_prop: PropertyModel,
+) -> tuple[Edit, ...]:
+    replacement = candidate.parsed.source[
+        new_prop.declaration_span.start:new_prop.declaration_span.end
+    ]
+    replacement = _to_line_ending(replacement, existing.parsed.entity.line_ending)
+    edits = [Edit("replace", existing.file.path, old_prop.declaration_span, replacement)]
+    edits.extend(_import_edits(existing, candidate, _property_imports(candidate, new_prop)))
+    return tuple(_dedupe_edits(edits))
+
+
 def _property_type_span(parsed_file: _ParsedFile, prop: PropertyModel) -> SourceSpan:
     source = parsed_file.parsed.source
     lexer = lex_java if parsed_file.file.language == "java" else lex_kotlin
@@ -866,6 +896,19 @@ def _database_comment_edit(
     return Edit("replace", existing.file.path, old_span, replacement), old_text, new_text
 
 
+def _database_comment_matches_snapshot(
+    candidate: _ParsedFile,
+    prop: PropertyModel,
+    remarks: object,
+) -> bool:
+    candidate_doc = _doc_prefix(candidate.parsed.source, prop)[1]
+    candidate_payload = _normalized_doc_payload(candidate_doc)
+    if not candidate_payload:
+        return True
+    snapshot_payload = "" if remarks is None else " ".join(str(remarks).split())
+    return candidate_payload == snapshot_payload
+
+
 def _doc_prefix(source: str, prop: PropertyModel) -> tuple[SourceSpan | None, str]:
     boundary = min((item.span.start for item in prop.annotations), default=prop.declaration_span.start)
     text = source[prop.full_span.start:boundary]
@@ -880,6 +923,20 @@ def _doc_payload(text: str) -> str:
     if start < 0 or end < 0:
         return ""
     return "".join(character for character in text[start + 3:end] if not character.isspace() and character != "*")
+
+
+def _normalized_doc_payload(text: str) -> str:
+    start = text.find("/**")
+    end = text.find("*/", start + 3)
+    if start < 0 or end < 0:
+        return ""
+    lines = []
+    for line in text[start + 3:end].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("*"):
+            stripped = stripped[1:].strip()
+        lines.append(stripped)
+    return " ".join(" ".join(lines).split())
 
 
 def _property_imports(candidate: _ParsedFile, prop: PropertyModel) -> tuple[str, ...]:
@@ -967,10 +1024,9 @@ def _has_external_reference(
         significant = [token for token in tokens if token.kind == "IDENT" or token.text == "."]
         if item.language == "java" and any(token.text in {getter, setter} for token in significant):
             return True
-        if item.language == "kotlin":
-            for index, token in enumerate(significant[:-1]):
-                if token.text == "." and significant[index + 1].text.strip("`") == prop.name:
-                    return True
+        for index, token in enumerate(significant[:-1]):
+            if token.text == "." and significant[index + 1].text.strip("`") == prop.name:
+                return True
     return False
 
 
@@ -1067,16 +1123,21 @@ def _make_finding(
     edits: Sequence[Edit],
 ) -> Finding:
     safe_path = _plan_path(path)
-    finding_id = _finding_id(status, kind, table, column, safe_path)
-    final_action = action
     if status == "REVIEW_REQUIRED":
-        final_action = (
-            f"Approve {finding_id} to apply this exact proposal. Impact: {reason} "
+        action_template = (
+            f"Approve {_FINDING_ID_MARKER} to apply this exact proposal. Impact: {reason} "
             f"Manual action: {action}\nProposed diff:\n{_proposal_diff(safe_path, existing, candidate)}"
         )
     elif status == "BLOCKED":
-        final_action = "No automatic edit. " + action
+        action_template = "No automatic edit. " + action
         edits = ()
+    else:
+        action_template = action
+    finding_id = _finding_id(
+        status, kind, table, column, safe_path, database, existing, candidate,
+        reason, action_template, edits,
+    )
+    final_action = action_template.replace(_FINDING_ID_MARKER, finding_id)
     return Finding(
         finding_id, status, kind, safe_path, table, column, database,
         existing, candidate, reason, final_action, tuple(edits),
@@ -1084,20 +1145,70 @@ def _make_finding(
 
 
 def _finding_id(
-    status: str, kind: str, table: TableIdentity, column: str | None, path: str
+    status: str,
+    kind: str,
+    table: TableIdentity,
+    column: str | None,
+    path: str,
+    database: dict[str, object],
+    existing: str | None,
+    candidate: str | None,
+    reason: str,
+    action_template: str,
+    edits: Sequence[Edit],
 ) -> str:
-    normalized = [
-        status,
-        kind,
-        unicodedata.normalize("NFKC", table.catalog or "").casefold(),
-        unicodedata.normalize("NFKC", table.schema or "").casefold(),
-        unicodedata.normalize("NFKC", table.table).casefold(),
-        unicodedata.normalize("NFKC", column or "").casefold(),
-        path,
-    ]
-    digest = hashlib.sha256(json.dumps(normalized, separators=(",", ":")).encode()).hexdigest()[:12]
+    normalized = {
+        "status": status,
+        "kind": kind,
+        "table": [
+            unicodedata.normalize("NFKC", table.catalog or "").casefold(),
+            unicodedata.normalize("NFKC", table.schema or "").casefold(),
+            unicodedata.normalize("NFKC", table.table).casefold(),
+        ],
+        "column": unicodedata.normalize("NFKC", column or "").casefold(),
+        "path": path,
+        "database": database,
+        "existing": existing,
+        "candidate": candidate,
+        "reason": reason,
+        "action": action_template,
+        "edits": [_edit_dict(edit) for edit in edits],
+    }
+    try:
+        encoded = json.dumps(
+            normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exception:
+        raise PlanInputError("finding proposal is not canonical JSON") from exception
+    digest = hashlib.sha256(encoded).hexdigest()[:12]
     prefix = re.sub(r"[^a-z0-9]+", "-", (status + "-" + kind).lower()).strip("-")
     return prefix + "-" + digest
+
+
+def _finding_action_template(status: str, finding_id: str, action: str) -> str:
+    if status == "REVIEW_REQUIRED":
+        if action.count(finding_id) != 1:
+            raise PlanInputError("review action does not bind its exact finding ID")
+        return action.replace(finding_id, _FINDING_ID_MARKER)
+    if finding_id in action:
+        raise PlanInputError("non-review action unexpectedly contains its finding ID")
+    return action
+
+
+def _expected_finding_id(finding: Finding) -> str:
+    return _finding_id(
+        finding.status,
+        finding.kind,
+        finding.table,
+        finding.column,
+        finding.path,
+        finding.database,
+        finding.existing,
+        finding.candidate,
+        finding.reason,
+        _finding_action_template(finding.status, finding.finding_id, finding.action),
+        finding.edits,
+    )
 
 
 def _finding_sort_key(finding: Finding) -> tuple[object, ...]:
@@ -1121,12 +1232,16 @@ def _finding_dict(finding: Finding) -> dict[str, object]:
         "candidate": finding.candidate,
         "reason": finding.reason,
         "action": finding.action,
-        "edits": [{
-            "kind": edit.kind,
-            "path": edit.path,
-            "span": None if edit.span is None else {"start": edit.span.start, "end": edit.span.end},
-            "text": edit.text,
-        } for edit in finding.edits],
+        "edits": [_edit_dict(edit) for edit in finding.edits],
+    }
+
+
+def _edit_dict(edit: Edit) -> dict[str, object]:
+    return {
+        "kind": edit.kind,
+        "path": edit.path,
+        "span": None if edit.span is None else {"start": edit.span.start, "end": edit.span.end},
+        "text": edit.text,
     }
 
 
@@ -1155,7 +1270,11 @@ def _load_finding(value: object) -> Finding:
     if not isinstance(raw_edits, list):
         raise PlanInputError("invalid edits")
     edits = tuple(_load_edit(item) for item in raw_edits)
-    expected_id = _finding_id(value["status"], value["kind"], table, column, path)
+    action_template = _finding_action_template(value["status"], value["finding_id"], value["action"])
+    expected_id = _finding_id(
+        value["status"], value["kind"], table, column, path, value["database"],
+        value["existing"], value["candidate"], value["reason"], action_template, edits,
+    )
     if value["finding_id"] != expected_id:
         raise PlanInputError("finding ID does not match its stable identity")
     if value["status"] == "BLOCKED" and edits:

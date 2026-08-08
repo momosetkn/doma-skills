@@ -242,6 +242,31 @@ class EntityMergeTests(unittest.TestCase):
         self.assertIn("/** Display name */", merged)
         self.assertIn("Long version;", merged)
 
+    def test_database_comment_must_match_snapshot_remarks_before_it_is_applied(self) -> None:
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        candidate = java_entity(
+            fields=java_field("id", "employee_id", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id"), imports=("org.seasar.doma.Id",),
+        )
+        project.generated_file().write_text(candidate)
+        existing = candidate.replace("/** Employee ID */", "/** */", 1)
+        target = project.existing_file(existing)
+
+        plan = project.plan()
+        safe = next(f for f in plan.findings if f.kind == "add-database-comment")
+        self.assertEqual("SAFE", safe.status)
+        self.assertEqual("Employee ID", safe.database["column"]["remarks"])
+        project.commit()
+        self.assertEqual("SUCCESS", apply_plan(project.root, plan, approvals=()).state)
+        self.assertIn("/** Employee ID */", target.read_text())
+
+        project.existing_file(existing)
+        project.generated_file().write_text(candidate.replace("Employee ID", "Stale candidate", 1))
+        mismatch = next(f for f in project.plan().findings if f.kind == "database-comment-mismatch")
+        self.assertEqual("BLOCKED", mismatch.status)
+        self.assertFalse(mismatch.edits)
+
     def test_column_addition_and_unambiguous_correction_are_safe_but_property_rename_is_blocked(self) -> None:
         project = ProjectFixture(self)
         generated = java_entity(
@@ -403,11 +428,21 @@ class EntityMergeTests(unittest.TestCase):
         existing = (FIXTURES / "generated-candidates/kotlin/example/entity/Employee.kt").read_text().replace(
             "var id: Int = -1", "var id: Int? = null"
         )
-        project.existing_file(existing, "kt")
-        review = next(f for f in project.plan(language="kotlin").findings if f.kind == "kotlin-nullability")
+        target = project.existing_file(existing, "kt")
+        plan = project.plan(language="kotlin")
+        review = next(f for f in plan.findings if f.kind == "kotlin-nullability")
         self.assertEqual("REVIEW_REQUIRED", review.status)
         self.assertIn(review.finding_id, review.action)
         self.assertIn("@@", review.action)
+        self.assertIn("var id: Int? = null", review.existing or "")
+        self.assertIn("var id: Int = -1", review.candidate or "")
+        self.assertIn("-    var id: Int? = null", render_diff(plan))
+        self.assertIn("+    var id: Int = -1", render_diff(plan))
+        project.commit()
+        applied = apply_plan(project.root, plan, approvals=(review.finding_id,))
+        self.assertEqual("SUCCESS", applied.state)
+        self.assertIn("var id: Int = -1", target.read_text())
+        self.assertNotIn("var id: Int = null", target.read_text())
 
         for declaration in (
             "data class Employee(var id: Int)",
@@ -477,6 +512,16 @@ class EntityMergeTests(unittest.TestCase):
         self.assertEqual("BLOCKED", blocked.status)
         self.assertFalse(blocked.edits)
 
+        project.existing_file(existing)
+        use = project.existing / "example/entity/Use.java"
+        use.write_text(
+            "package example.entity; class Use { Object x(Employee employee) { "
+            "return employee.legacy; } }\n"
+        )
+        blocked = next(f for f in project.plan().findings if f.kind == "remove-property")
+        self.assertEqual("BLOCKED", blocked.status)
+        self.assertFalse(blocked.edits)
+
     def test_entity_missing_from_snapshot_is_reported_blocked_and_never_deleted(self) -> None:
         project = ProjectFixture(self)
         project.generated.mkdir(parents=True)
@@ -504,11 +549,32 @@ class EntityMergeTests(unittest.TestCase):
             fields=java_field("id", "employee_id", "Long", annotations=("@Id",)),
             methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
         )
-        project.existing_file(existing)
-        review = next(f for f in project.plan().findings if f.kind == "narrow-basic-type")
+        target = project.existing_file(existing)
+        plan = project.plan()
+        review = next(f for f in plan.findings if f.kind == "narrow-basic-type")
         self.assertEqual("REVIEW_REQUIRED", review.status)
-        use = project.existing / "example/Use.java"
-        use.write_text("package example; class Use { void x(Employee e) { e.setId(1L); } }\n")
+        self.assertIn("Long id;", review.existing or "")
+        self.assertIn("public Long getId()", review.existing or "")
+        self.assertIn("Integer id;", review.candidate or "")
+        self.assertIn("public Integer getId()", review.candidate or "")
+        diff = render_diff(plan)
+        self.assertIn("-    Long id;", diff)
+        self.assertIn("+    Integer id;", diff)
+        project.commit()
+        applied = apply_plan(project.root, plan, approvals=(review.finding_id,))
+        self.assertEqual("SUCCESS", applied.state)
+        merged = target.read_text()
+        self.assertIn("Integer id;", merged)
+        self.assertIn("public Integer getId()", merged)
+        self.assertIn("setId(Integer id)", merged)
+        self.assertNotIn("Long id", merged)
+
+        project.existing_file(existing)
+        use = project.existing / "example/entity/Use.java"
+        use.write_text(
+            "package example.entity; class Use { Long x(Employee employee) { "
+            "return employee.id; } }\n"
+        )
         blocked = next(f for f in project.plan().findings if f.kind == "narrow-basic-type")
         self.assertEqual("BLOCKED", blocked.status)
         self.assertFalse(blocked.edits)

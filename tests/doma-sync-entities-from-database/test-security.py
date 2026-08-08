@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,7 +22,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from entity_sync.applier import UnsafeProjectError, apply_plan
 from entity_sync.model import SourceSpan
-from entity_sync.planner import Edit, PlanInputError, _finding_id, build_plan
+from entity_sync.planner import Edit, PlanInputError, build_plan
 
 
 SAFE_SNAPSHOT = {
@@ -62,6 +65,22 @@ public class Employee {
     }
 }
 '''
+
+
+def old_style_finding_id(finding: object, path: str) -> str:
+    table = finding.table
+    normalized = [
+        finding.status,
+        finding.kind,
+        unicodedata.normalize("NFKC", table.catalog or "").casefold(),
+        unicodedata.normalize("NFKC", table.schema or "").casefold(),
+        unicodedata.normalize("NFKC", table.table).casefold(),
+        unicodedata.normalize("NFKC", finding.column or "").casefold(),
+        path,
+    ]
+    digest = hashlib.sha256(json.dumps(normalized, separators=(",", ":")).encode()).hexdigest()[:12]
+    prefix = re.sub(r"[^a-z0-9]+", "-", (finding.status + "-" + finding.kind).lower()).strip("-")
+    return prefix + "-" + digest
 
 
 class SecurityTests(unittest.TestCase):
@@ -158,7 +177,7 @@ class SecurityTests(unittest.TestCase):
         path = "build/doma-codegen/schema-snapshot.json"
         tampered = replace(
             finding,
-            finding_id=_finding_id(finding.status, finding.kind, finding.table, finding.column, path),
+            finding_id=old_style_finding_id(finding, path),
             path=path,
             database={**finding.database, "existing_root": "build"},
             edits=(Edit("replace", path, SourceSpan(0, 1), "{"),),
@@ -174,6 +193,75 @@ class SecurityTests(unittest.TestCase):
         with self.assertRaises(PlanInputError):
             apply_plan(root, plan, approvals=())
         self.assertEqual(before, snapshot.read_bytes())
+
+    def test_old_style_recomputed_create_id_cannot_escape_source_root_or_change_payload(self) -> None:
+        root, snapshot, generated_root, _ = self.project()
+        existing_root = root / "src/main/java"
+        (existing_root / "example/Employee.java").unlink()
+        plan = build_plan(root, snapshot, generated_root, (existing_root,), "auto")
+        finding = next(item for item in plan.findings if item.kind == "create-entity")
+        path = "outside-source-root/payload.txt"
+        tampered = replace(
+            finding,
+            finding_id=old_style_finding_id(finding, path),
+            path=path,
+            database={**finding.database, "existing_root": "."},
+            edits=(Edit("create", path, None, "review-exploit-payload\n"),),
+        )
+        plan = replace(plan, findings=(tampered,))
+        self._commit(root)
+
+        with self.assertRaises((PlanInputError, UnsafeProjectError)):
+            apply_plan(root, plan, approvals=())
+        self.assertFalse((root / path).exists())
+        self.assertFalse((existing_root / "example/Employee.java").exists())
+
+    def test_exact_proposal_binding_rejects_edit_span_text_and_database_fact_mutation(self) -> None:
+        for mutation in ("span", "text", "database"):
+            with self.subTest(mutation=mutation):
+                root, snapshot, generated_root, _ = self.project()
+                existing_root = root / "src/main/java"
+                (existing_root / "example/Employee.java").write_text(JAVA.replace("    @Id\n", ""))
+                plan = build_plan(root, snapshot, generated_root, (existing_root,), "auto")
+                finding = next(item for item in plan.findings if item.edits)
+                edits = list(finding.edits)
+                database = finding.database
+                if mutation == "span":
+                    edit = edits[0]
+                    assert edit.span is not None
+                    edits[0] = replace(edit, span=SourceSpan(edit.span.start + 1, edit.span.end + 1))
+                elif mutation == "text":
+                    edits[0] = replace(edits[0], text=edits[0].text + "/* mutated */")
+                else:
+                    database = {**database, "column_present": True}
+                tampered = replace(finding, database=database, edits=tuple(edits))
+                plan = replace(plan, findings=(tampered,))
+                self._commit(root)
+                before = (existing_root / "example/Employee.java").read_bytes()
+
+                with self.assertRaises(PlanInputError):
+                    apply_plan(root, plan, approvals=())
+                self.assertEqual(before, (existing_root / "example/Employee.java").read_bytes())
+
+    def test_create_requires_the_exact_hashed_generated_candidate(self) -> None:
+        root, snapshot, generated_root, _ = self.project()
+        existing_root = root / "src/main/java"
+        (existing_root / "example/Employee.java").unlink()
+        plan = build_plan(root, snapshot, generated_root, (existing_root,), "auto")
+        finding = next(item for item in plan.findings if item.kind == "create-entity")
+        plan = replace(plan, generated_hashes=())
+        self._commit(root)
+
+        with self.assertRaises(PlanInputError):
+            apply_plan(root, plan, approvals=())
+        self.assertFalse((root / finding.path).exists())
+
+    def _commit(self, root: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "Fixture"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "fixture@example.invalid"], cwd=root, check=True)
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture"], cwd=root, check=True)
 
 
 if __name__ == "__main__":

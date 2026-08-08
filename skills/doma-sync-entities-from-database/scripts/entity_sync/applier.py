@@ -18,7 +18,7 @@ from .planner import (
     Finding,
     MergePlan,
     PlanInputError,
-    _finding_id,
+    _expected_finding_id,
     contains_sensitive,
     load_plan,
     result_state,
@@ -139,19 +139,38 @@ def _validate_plan_object(plan: MergePlan) -> None:
         raise PlanInputError("unsupported merge plan")
     if len(plan.schema_snapshot_sha256) != 64:
         raise PlanInputError("invalid schema snapshot hash")
+    _validate_hash_pairs(plan.source_hashes, "source")
+    _validate_hash_pairs(plan.generated_hashes, "generated")
     source_paths = {path for path, _ in plan.source_hashes}
+    generated_paths = {path for path, _ in plan.generated_hashes}
     ids: set[str] = set()
     for finding in plan.findings:
-        expected = _finding_id(
-            finding.status, finding.kind, finding.table, finding.column, finding.path
-        )
+        expected = _expected_finding_id(finding)
         if finding.finding_id != expected or finding.finding_id in ids:
             raise PlanInputError("invalid or duplicate finding ID")
         ids.add(finding.finding_id)
         if finding.status == "BLOCKED" and finding.edits:
             raise PlanInputError("blocked finding contains executable edits")
+        if any(edit.path != finding.path for edit in finding.edits):
+            raise PlanInputError("finding edit path does not match its proposal path")
         if any(edit.kind != "create" and edit.path not in source_paths for edit in finding.edits):
             raise PlanInputError("source edit target was not hashed during planning")
+        creates = [edit for edit in finding.edits if edit.kind == "create"]
+        if creates:
+            if len(finding.edits) != 1 or len(creates) != 1:
+                raise PlanInputError("create proposal must contain exactly one create edit")
+            generated_path = finding.database.get("generated_path")
+            if not isinstance(generated_path, str) or generated_path not in generated_paths:
+                raise PlanInputError("create proposal has no exact generated candidate hash")
+
+
+def _validate_hash_pairs(pairs: Sequence[tuple[str, str]], name: str) -> None:
+    if tuple(sorted(pairs)) != tuple(pairs) or len({path for path, _ in pairs}) != len(pairs):
+        raise PlanInputError(name + " hashes must be unique and sorted")
+    for path, digest in pairs:
+        _normalized_plan_path(path)
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise PlanInputError("invalid " + name + " SHA-256")
 
 
 def _verify_hashes(root: Path, plan: MergePlan) -> None:
@@ -169,10 +188,35 @@ def _verify_hashes(root: Path, plan: MergePlan) -> None:
     for finding in plan.findings:
         for edit in finding.edits:
             if edit.kind == "create":
-                target = _normalized(root, edit.path)
-                _reject_symlink_components(root, target, allow_missing=True)
-                if target.exists() or target.is_symlink():
-                    raise StalePlanError("planned create target now exists")
+                _verify_create_binding(root, plan, finding, edit)
+
+
+def _verify_create_binding(root: Path, plan: MergePlan, finding: Finding, edit: Edit) -> None:
+    existing_root_text = finding.database.get("existing_root")
+    generated_root_text = finding.database.get("generated_root")
+    generated_path_text = finding.database.get("generated_path")
+    if not all(isinstance(item, str) for item in (
+        existing_root_text, generated_root_text, generated_path_text
+    )):
+        raise PlanInputError("create proposal is missing validated roots")
+    assert isinstance(existing_root_text, str)
+    assert isinstance(generated_root_text, str)
+    assert isinstance(generated_path_text, str)
+    source_root = _strict_source_root(root, existing_root_text)
+    generated_root = _strict_subdirectory(root, generated_root_text, "generated root")
+    target = _normalized(root, edit.path)
+    generated_path = _safe_existing(root, generated_path_text)
+    if not _contains(source_root, target) or target == source_root:
+        raise UnsafeProjectError("create target is outside its validated source root")
+    if not _contains(generated_root, generated_path) or generated_path == generated_root:
+        raise UnsafeProjectError("generated candidate is outside its validated root")
+    if target.relative_to(source_root) != generated_path.relative_to(generated_root):
+        raise PlanInputError("create target does not match the generated candidate path")
+    _reject_symlink_components(root, target, allow_missing=True)
+    if target.exists() or target.is_symlink():
+        raise StalePlanError("planned create target now exists")
+    if generated_path.read_bytes() != edit.text.encode("utf-8"):
+        raise PlanInputError("create content is not the exact hashed generated candidate")
 
 
 def _verify_git(root: Path) -> None:
@@ -292,11 +336,33 @@ def _write_temporary(
 
 def _safe_target(root: Path, path: str, source_root_text: str) -> Path:
     target = _normalized(root, path)
-    source_root = _normalized(root, source_root_text)
+    source_root = _strict_source_root(root, source_root_text)
     if not _contains(source_root, target):
         raise UnsafeProjectError("source edit is outside its existing root")
     _reject_symlink_components(root, target, allow_missing=True)
     return target
+
+
+def _strict_source_root(root: Path, value: str) -> Path:
+    return _strict_subdirectory(root, value, "existing source root")
+
+
+def _strict_subdirectory(root: Path, value: str, label: str) -> Path:
+    if value in {"", "."}:
+        raise UnsafeProjectError(label + " must be a strict project subdirectory")
+    path = _normalized(root, value)
+    _reject_symlink_components(root, path)
+    if path == root or not path.is_dir() or path.is_symlink():
+        raise UnsafeProjectError(label + " is not an existing real directory")
+    return path
+
+
+def _normalized_plan_path(value: str) -> None:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise PlanInputError("invalid project-relative path")
+    path = Path(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise PlanInputError("invalid project-relative path")
 
 
 def _safe_existing(root: Path, path: str) -> Path:
