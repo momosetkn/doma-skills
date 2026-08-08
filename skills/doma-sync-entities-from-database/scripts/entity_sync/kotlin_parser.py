@@ -13,6 +13,7 @@ from .java_parser import (
     _matching_index,
     _non_template_annotation_argument_reasons,
     _plain_string,
+    _same_package_annotation_names,
     _split_indices,
     _top_level_floor,
     _top_level_text,
@@ -53,15 +54,31 @@ class KotlinParseError(ValueError):
     """Raised when the file has no identifiable top-level Doma type at all."""
 
 
-def find_kotlin_domain_declarations(source: str) -> tuple[str, ...]:
+def find_kotlin_annotation_declarations(source: str) -> tuple[str, ...]:
+    """Return fully qualified top-level annotation declarations for project context."""
+    all_tokens = lex_kotlin(source)
+    if any(token.kind == "ERROR" for token in all_tokens):
+        return ()
+    tokens = tuple(token for token in all_tokens if token.kind not in TRIVIA)
+    package_name = _parse_package(source, tokens)
+    prefix = package_name + "." if package_name else ""
+    return tuple(prefix + name for name in sorted(_declared_annotation_names(tokens)))
+
+
+def find_kotlin_domain_declarations(
+    source: str,
+    annotation_declarations: Iterable[str] = (),
+) -> tuple[str, ...]:
     """Return fully qualified project Domain types with unambiguous annotations."""
     all_tokens = lex_kotlin(source)
     if any(token.kind == "ERROR" for token in all_tokens):
         return ()
     tokens = tuple(token for token in all_tokens if token.kind not in TRIVIA)
     imports, _ = _parse_imports(source, tokens)
-    shadowed_annotations = _declared_annotation_names(tokens)
     package_name = _parse_package(source, tokens)
+    shadowed_annotations = _declared_annotation_names(tokens).union(
+        _same_package_annotation_names(package_name, annotation_declarations)
+    )
     declarations: list[str] = []
     brace = paren = bracket = 0
     for index, token in enumerate(tokens):
@@ -91,14 +108,17 @@ def parse_kotlin(
     source: str,
     path: str = "<memory>.kt",
     domain_types: Iterable[str] = (),
+    annotation_declarations: Iterable[str] = (),
 ) -> ParsedEntity:
     """Parse one top-level Doma entity and fail closed on edit-sensitive syntax."""
     domain_type_names = frozenset(domain_types)
     tokens = lex_kotlin(source)
     significant = tuple(token for token in tokens if token.kind not in TRIVIA)
     imports, import_region = _parse_imports(source, significant)
-    shadowed_annotations = _declared_annotation_names(significant)
     package_name = _parse_package(source, significant)
+    shadowed_annotations = _declared_annotation_names(significant).union(
+        _same_package_annotation_names(package_name, annotation_declarations)
+    )
     reasons: list[str] = []
     if any(token.kind == "ERROR" for token in tokens):
         reasons.append("unmatched lexical construct")
@@ -527,10 +547,11 @@ def _annotation_arguments(
         equals = _top_level_text(tokens, piece_start, piece_end, "=")
         if equals is None:
             key = "value" if position == 0 else "$" + str(position + 1)
-            value = source[tokens[piece_start].span.start:tokens[piece_end - 1].span.end].strip()
+            value_start = tokens[piece_start - 1].span.end
         else:
-            key = source[tokens[piece_start].span.start:tokens[equals - 1].span.end].strip()
-            value = source[tokens[equals + 1].span.start:tokens[piece_end - 1].span.end].strip()
+            key = source[tokens[piece_start].span.start:tokens[equals].span.start].strip()
+            value_start = tokens[equals].span.end
+        value = source[value_start:tokens[piece_end].span.start].strip()
         result.append((key, value))
     return tuple(result)
 

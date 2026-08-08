@@ -14,8 +14,16 @@ FIXTURES = Path(__file__).parent / "fixtures/source-model"
 sys.path.insert(0, str(SCRIPTS))
 
 from entity_sync.lexer import balanced_region, lex_java, lex_kotlin
-from entity_sync.java_parser import find_java_domain_declarations, parse_java
-from entity_sync.kotlin_parser import find_kotlin_domain_declarations, parse_kotlin
+from entity_sync.java_parser import (
+    find_java_annotation_declarations,
+    find_java_domain_declarations,
+    parse_java,
+)
+from entity_sync.kotlin_parser import (
+    find_kotlin_annotation_declarations,
+    find_kotlin_domain_declarations,
+    parse_kotlin,
+)
 from entity_sync.model import (
     AnnotationModel,
     EntityModel,
@@ -247,6 +255,62 @@ class Employee {
             with self.subTest(language=parsed.entity.language):
                 self.assertIn("ambiguous annotation: Entity", parsed.entity.unsupported_reasons)
                 self.assertFalse(parsed.entity.generated_only)
+
+    def test_java_sibling_annotation_context_shadows_only_wildcard_imports(self) -> None:
+        sibling = (FIXTURES / "sibling-annotation.java").read_text(encoding="utf-8")
+        wildcard = """package example.shadow;
+import org.seasar.doma.*;
+/** */
+@Entity @Table(name = "employee")
+public class Employee {
+  /** */ @Column(name = "id") public Long id;
+}
+"""
+        exact = wildcard.replace(
+            "import org.seasar.doma.*;",
+            "import org.seasar.doma.Column;\n"
+            "import org.seasar.doma.Entity;\n"
+            "import org.seasar.doma.Table;",
+        )
+
+        declarations = find_java_annotation_declarations(sibling)
+        self.assertEqual(("example.shadow.Entity",), declarations)
+        wildcard_entity = parse_java(
+            wildcard, path="Employee.java", annotation_declarations=declarations
+        ).entity
+        self.assertIn("ambiguous annotation: Entity", wildcard_entity.unsupported_reasons)
+        self.assertFalse(wildcard_entity.generated_only)
+        self.assertTrue(parse_java(
+            exact, path="Employee.java", annotation_declarations=declarations
+        ).entity.generated_only)
+
+    def test_kotlin_sibling_annotation_context_shadows_only_wildcard_imports(self) -> None:
+        sibling = (FIXTURES / "sibling-annotation.kt").read_text(encoding="utf-8")
+        wildcard = """package example.shadow
+import org.seasar.doma.*
+/** */
+@Entity @Table(name = "employee")
+class Employee {
+  /** */ @Column(name = "id") var id: Long = -1L
+}
+"""
+        exact = wildcard.replace(
+            "import org.seasar.doma.*",
+            "import org.seasar.doma.Column\n"
+            "import org.seasar.doma.Entity\n"
+            "import org.seasar.doma.Table",
+        )
+
+        declarations = find_kotlin_annotation_declarations(sibling)
+        self.assertEqual(("example.shadow.Entity",), declarations)
+        wildcard_entity = parse_kotlin(
+            wildcard, path="Employee.kt", annotation_declarations=declarations
+        ).entity
+        self.assertIn("ambiguous annotation: Entity", wildcard_entity.unsupported_reasons)
+        self.assertFalse(wildcard_entity.generated_only)
+        self.assertTrue(parse_kotlin(
+            exact, path="Employee.kt", annotation_declarations=declarations
+        ).entity.generated_only)
 
     def test_java_duplicate_columns_crlf_and_missing_final_newline_are_preserved(self) -> None:
         source = (
@@ -484,6 +548,96 @@ class X {
                     reasons,
                 )
                 self.assertFalse(parsed.entity.generated_only)
+
+    def test_java_annotation_values_preserve_comments_and_reject_expressions(self) -> None:
+        source = """import org.seasar.doma.*;
+/** */
+@Entity(listener = /* before */ EmployeeListener.class, metamodel = @Metamodel)
+@Table(name = "employee_" + "table")
+public class X {
+  /** */
+  @Id
+  @GeneratedValue(strategy = GenerationType.SEQUENCE)
+  @SequenceGenerator(sequence = "employee_seq" /* after */)
+  @Column(name = "employee_" /* in */ + "id")
+  public Long id;
+}
+"""
+
+        entity = parse_java(source, path="X.java").entity
+        annotations = {
+            annotation.qualified_name: annotation
+            for annotation in entity.properties[0].annotations
+        }
+        self.assertEqual(
+            (("sequence", '"employee_seq" /* after */'),),
+            annotations["org.seasar.doma.SequenceGenerator"].arguments,
+        )
+        self.assertEqual(
+            (("name", '"employee_" /* in */ + "id"'),),
+            annotations["org.seasar.doma.Column"].arguments,
+        )
+        self.assertEqual(TableIdentity(None, None, "X"), entity.table)
+        self.assertEqual("id", entity.properties[0].column)
+        self.assertTrue(any(
+            reason.startswith(
+                "non-template annotation arguments: org.seasar.doma.Entity on class "
+                "(listener=/* before */ EmployeeListener.class"
+            )
+            for reason in entity.unsupported_reasons
+        ))
+        for annotation_name in ("Table", "SequenceGenerator", "Column"):
+            self.assertTrue(any(
+                "non-template annotation arguments: org.seasar.doma." + annotation_name
+                in reason
+                for reason in entity.unsupported_reasons
+            ))
+        self.assertFalse(entity.generated_only)
+
+    def test_kotlin_annotation_values_preserve_comments_and_reject_expressions(self) -> None:
+        source = """import org.seasar.doma.*
+/** */
+@Entity(listener = /* before */ EmployeeListener::class, metamodel = Metamodel())
+@Table(name = "employee_" + "table")
+class X {
+  /** */
+  @Id
+  @GeneratedValue(strategy = GenerationType.SEQUENCE)
+  @SequenceGenerator(sequence = "employee_seq" /* after */)
+  @Column(name = "employee_" /* in */ + "id")
+  var id: Long = -1L
+}
+"""
+
+        entity = parse_kotlin(source, path="X.kt").entity
+        annotations = {
+            annotation.qualified_name: annotation
+            for annotation in entity.properties[0].annotations
+        }
+        self.assertEqual(
+            (("sequence", '"employee_seq" /* after */'),),
+            annotations["org.seasar.doma.SequenceGenerator"].arguments,
+        )
+        self.assertEqual(
+            (("name", '"employee_" /* in */ + "id"'),),
+            annotations["org.seasar.doma.Column"].arguments,
+        )
+        self.assertEqual(TableIdentity(None, None, "X"), entity.table)
+        self.assertEqual("id", entity.properties[0].column)
+        self.assertTrue(any(
+            reason.startswith(
+                "non-template annotation arguments: org.seasar.doma.Entity on class "
+                "(listener=/* before */ EmployeeListener::class"
+            )
+            for reason in entity.unsupported_reasons
+        ))
+        for annotation_name in ("Table", "SequenceGenerator", "Column"):
+            self.assertTrue(any(
+                "non-template annotation arguments: org.seasar.doma." + annotation_name
+                in reason
+                for reason in entity.unsupported_reasons
+            ))
+        self.assertFalse(entity.generated_only)
 
     def test_handwritten_multiline_property_docs_never_classify_as_codegen_only(self) -> None:
         java = """import org.seasar.doma.*;\n/** Handwritten entity. */\n@Entity @Table(name = \"x\") public class X {\n  /**\n   * Application-owned meaning.\n   */\n  @Column(name = \"value\") public String value;\n}\n"""

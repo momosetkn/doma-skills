@@ -57,15 +57,31 @@ class JavaParseError(ValueError):
     """Raised when the file has no identifiable top-level Doma type at all."""
 
 
-def find_java_domain_declarations(source: str) -> tuple[str, ...]:
+def find_java_annotation_declarations(source: str) -> tuple[str, ...]:
+    """Return fully qualified top-level annotation declarations for project context."""
+    all_tokens = lex_java(source)
+    if any(token.kind == "ERROR" for token in all_tokens):
+        return ()
+    tokens = tuple(token for token in all_tokens if token.kind not in TRIVIA)
+    package_name = _parse_package(tokens)
+    prefix = package_name + "." if package_name else ""
+    return tuple(prefix + name for name in sorted(_declared_annotation_names(tokens)))
+
+
+def find_java_domain_declarations(
+    source: str,
+    annotation_declarations: Iterable[str] = (),
+) -> tuple[str, ...]:
     """Return fully qualified project Domain types with unambiguous annotations."""
     all_tokens = lex_java(source)
     if any(token.kind == "ERROR" for token in all_tokens):
         return ()
     tokens = tuple(token for token in all_tokens if token.kind not in TRIVIA)
     imports, _ = _parse_imports(source, tokens)
-    shadowed_annotations = _declared_annotation_names(tokens)
     package_name = _parse_package(tokens)
+    shadowed_annotations = _declared_annotation_names(tokens).union(
+        _same_package_annotation_names(package_name, annotation_declarations)
+    )
     declarations: list[str] = []
     brace = paren = bracket = 0
     for index, token in enumerate(tokens):
@@ -95,14 +111,17 @@ def parse_java(
     source: str,
     path: str = "<memory>.java",
     domain_types: Iterable[str] = (),
+    annotation_declarations: Iterable[str] = (),
 ) -> ParsedEntity:
     """Parse one top-level Doma entity and retain all uncertain syntax as findings."""
     domain_type_names = frozenset(domain_types)
     tokens = lex_java(source)
     significant = tuple(token for token in tokens if token.kind not in TRIVIA)
     imports, import_region = _parse_imports(source, significant)
-    shadowed_annotations = _declared_annotation_names(significant)
     package_name = _parse_package(significant)
+    shadowed_annotations = _declared_annotation_names(significant).union(
+        _same_package_annotation_names(package_name, annotation_declarations)
+    )
     reasons: list[str] = []
     if any(token.kind == "ERROR" for token in tokens):
         reasons.append("unmatched lexical construct")
@@ -491,10 +510,11 @@ def _annotation_arguments(
         equals = _top_level_text(tokens, piece_start, piece_end, "=")
         if equals is None:
             key = "value" if position == 0 else "$" + str(position + 1)
-            value = source[tokens[piece_start].span.start:tokens[piece_end - 1].span.end].strip()
+            value_start = tokens[piece_start - 1].span.end
         else:
-            key = source[tokens[piece_start].span.start:tokens[equals - 1].span.end].strip()
-            value = source[tokens[equals + 1].span.start:tokens[piece_end - 1].span.end].strip()
+            key = source[tokens[piece_start].span.start:tokens[equals].span.start].strip()
+            value_start = tokens[equals].span.end
+        value = source[value_start:tokens[piece_end].span.start].strip()
         result.append((key, value))
     return tuple(result)
 
@@ -855,6 +875,20 @@ def _declared_annotation_names(tokens: Sequence[Token]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _same_package_annotation_names(
+    package_name: str, declarations: Iterable[str]
+) -> frozenset[str]:
+    names: set[str] = set()
+    for declaration in declarations:
+        declaration_package, separator, simple_name = declaration.rpartition(".")
+        if not separator:
+            declaration_package = ""
+            simple_name = declaration
+        if declaration_package == package_name and simple_name:
+            names.add(simple_name)
+    return frozenset(names)
+
+
 def _resolve_annotation(
     name: str,
     imports: tuple[str, ...],
@@ -946,7 +980,7 @@ def _plain_string(value: str | None) -> str | None:
     if value is None or len(value) < 2 or not (value.startswith('"') and value.endswith('"')):
         return None
     interior = value[1:-1]
-    if "\\" in interior or "\n" in interior or "\r" in interior:
+    if "\\" in interior or '"' in interior or "\n" in interior or "\r" in interior:
         return None
     return interior
 
