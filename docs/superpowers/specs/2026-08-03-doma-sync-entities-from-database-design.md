@@ -128,7 +128,7 @@ JDBC driver coordinates and versions must be taken from a compatible dependency 
 
 ## Chosen Architecture
 
-Use one public orchestration skill, focused references, three deterministic implementation scripts, and repository-level tests and fixtures.
+Use one public orchestration skill, focused references, four deterministic implementation helpers, and repository-level tests and fixtures.
 
 ```text
 skills/doma-sync-entities-from-database/
@@ -147,6 +147,7 @@ skills/doma-sync-entities-from-database/
   scripts/
     configure-codegen.py
     generate-entities.sh
+    schema-snapshot.java
     compare-and-merge-entities.py
 
 tests/doma-sync-entities-from-database/
@@ -154,6 +155,7 @@ tests/doma-sync-entities-from-database/
   test-entity-merge.py
   test-security.py
   test-generate-wrapper.py
+  test-schema-snapshot.py
   test-install.sh
   fixtures/
     java-kotlin-dsl-postgresql/
@@ -179,8 +181,9 @@ Repository-level tests are authoring assets and are not installed with the skill
 - `references/aws-security.md`: Defines exact-target AWS inspection, Secrets Manager and IAM-token handling, RDS Proxy differences, command allowlists, masking, and non-mutation guarantees.
 - `references/troubleshooting.md`: Maps project, configuration, AWS, network, JDBC metadata, generation, parsing, merge, annotation-processing, and build failures to safe next actions.
 - `scripts/configure-codegen.py`: Inspects and idempotently modifies `build.gradle` or `build.gradle.kts` with token-aware balanced-block handling. It never handles secret values.
-- `scripts/generate-entities.sh`: Resolves connection inputs, performs approved read-only AWS operations, retrieves a secret or creates an IAM token just in time when required, masks output, and runs only the official entity generation task with `--no-daemon`.
-- `scripts/compare-and-merge-entities.py`: Tokenizes Java/Kotlin, creates normalized models, writes a deterministic plan and diff, applies `SAFE` changes, and applies `REVIEW_REQUIRED` changes only by approved proposal ID.
+- `scripts/generate-entities.sh`: Resolves connection inputs, performs approved read-only AWS operations, retrieves a secret or creates an IAM token just in time when required, masks output, snapshots JDBC metadata, and runs only the official entity generation task with `--no-daemon`.
+- `scripts/schema-snapshot.java`: Runs as a Java 17 source file with the project's CodeGen JDBC driver classpath, reads only JDBC `DatabaseMetaData`, and writes a deterministic, credential-free schema manifest.
+- `scripts/compare-and-merge-entities.py`: Tokenizes Java/Kotlin, combines the schema manifest with generated candidates and existing entities, writes a deterministic plan and diff, applies `SAFE` changes, and applies `REVIEW_REQUIRED` changes only by approved proposal ID.
 
 ## Ordered Workflow
 
@@ -239,7 +242,8 @@ The script:
 5. creates or repairs a named `domaSync` configuration;
 6. surrounds only script-owned content with stable managed markers;
 7. refuses ambiguous or dynamically constructed Gradle structures rather than rewriting them;
-8. produces no diff when run twice with the same inputs.
+8. registers a non-secret `domaSyncWriteCodeGenClasspath` task that writes the resolved `domaCodeGen` classpath into the build directory without printing it;
+9. produces no diff when run twice with the same inputs.
 
 If a compatible unmanaged `domaCodeGen` container already exists, add the dedicated named configuration without changing unrelated named configurations. If an unmanaged `domaSync` configuration exists, adopt it only when every required edit can be proven local and non-destructive; otherwise stop with a configuration conflict.
 
@@ -264,15 +268,38 @@ The resulting official task for `register("domaSync")` is:
 ./gradlew --no-daemon domaCodeGenDomaSyncEntity
 ```
 
+The additional `domaSyncWriteCodeGenClasspath` task is explicitly a skill-managed helper, not a task supplied by Doma CodeGen. It resolves the existing `domaCodeGen` dependency configuration and writes only filesystem paths to `build/doma-codegen/codegen-classpath.txt`. It takes no database inputs and must work without credentials. The generation wrapper uses that classpath to launch the bundled Java metadata snapshot helper with the same PostgreSQL or MySQL driver used by CodeGen.
+
 Generation and merge remain separate operations. Do not register a Gradle `Exec` merge task whose command depends on a particular skill installation path.
 
-### 5. Generate into the Isolated Directory
+### 5. Snapshot Metadata and Generate into the Isolated Directory
 
-`generate-entities.sh` validates that the resolved output is inside the current Gradle build directory before cleaning only that exact generated directory. It must never resolve to a source root, repository root, home directory, or an unresolved variable.
+`generate-entities.sh` validates that every resolved output is inside the current Gradle build directory before cleaning only the exact generated and snapshot paths. They must never resolve to a source root, repository root, home directory, or an unresolved variable.
+
+The wrapper first runs `domaSyncWriteCodeGenClasspath`, then launches:
+
+```bash
+codegen_classpath=$(<build/doma-codegen/codegen-classpath.txt)
+DOMA_CODEGEN_SCHEMA_SNAPSHOT=build/doma-codegen/schema-snapshot.json \
+  java --class-path "$codegen_classpath" "$skill_dir/scripts/schema-snapshot.java"
+```
+
+The actual installed skill path is resolved at runtime; it is not written into the target project's Gradle file. The helper reads URL, user, password/token, schema/catalog, and table filters only from its child-process environment. It gives credentials to `DriverManager` as connection properties rather than embedding them in the JDBC URL.
+
+Using `DatabaseMetaData.getTables`, `getColumns`, and `getPrimaryKeys`, write `build/doma-codegen/schema-snapshot.json` with sorted, normalized fields for:
+
+- catalog, schema, table name and table type;
+- column name and ordinal position;
+- JDBC `DATA_TYPE` and database `TYPE_NAME`;
+- size, precision/scale where reported;
+- nullable, default, auto-increment, and remarks where reported;
+- primary-key membership, key sequence, and key name where reported.
+
+Never include the JDBC URL, host, username, password/token, AWS identifiers, driver classpath, or raw exception text in the manifest. Treat unavailable metadata as explicitly unknown rather than inventing a value. Validate the manifest against the selected database family, schema/catalog, and table scope before CodeGen or comparison proceeds.
 
 The wrapper invokes only `domaCodeGenDomaSyncEntity`. It does not invoke `All`, DAO, SQL, DTO, SQL-test, build, migration, `psql`, or `mysql` commands.
 
-Doma CodeGen may use JDBC `DatabaseMetaData` and dialect-specific read-only comment queries. The skill therefore promises no DDL or DML, not an inaccurate guarantee that no SQL `SELECT` is issued. Recommend a read-only database user and validate that the selected user cannot mutate schema or data when a disposable integration environment is available.
+The snapshot helper uses only JDBC metadata APIs. Doma CodeGen may additionally use dialect-specific read-only comment queries. The skill therefore promises no DDL or DML, not an inaccurate guarantee that no SQL `SELECT` is issued. Recommend a read-only database user and validate that the selected user cannot mutate schema or data when a disposable integration environment is available.
 
 ### 6. Build a Deterministic Merge Plan
 
@@ -283,6 +310,7 @@ It records:
 - input and configuration schema version;
 - sorted table/entity identities;
 - SHA-256 of every existing and generated source file;
+- SHA-256 of the validated schema snapshot;
 - normalized database and source structures;
 - ordered `SAFE`, `REVIEW_REQUIRED`, and `BLOCKED` findings;
 - an ordered unified diff;
@@ -298,6 +326,7 @@ Before writing, `apply` rechecks:
 - hashes of every input;
 - Git status of all target entities and build files;
 - generated directory location;
+- schema snapshot hash and selected scope;
 - proposal approval IDs.
 
 Any stale or mismatched input stops the complete apply stage before the first write.
@@ -381,7 +410,7 @@ Environment delivery is the requested interface, but it is not described as prot
 
 ## Structural Comparison Model
 
-Use a deterministic lexical scanner and small language-aware parsers implemented with the Python standard library. Do not depend on regular expressions alone, and do not claim compiler-complete AST coverage.
+Use the credential-free JDBC schema snapshot as the authority for physical database facts. Use generated CodeGen entities as the authority for Doma's candidate Java/Kotlin mapping. Use a deterministic lexical scanner and small language-aware parsers implemented with the Python standard library for existing and candidate source. Do not depend on regular expressions alone, and do not claim compiler-complete AST coverage.
 
 Normalize at least:
 
@@ -604,6 +633,7 @@ Test at least:
 - import and comment handling;
 - generated-only versus handwritten classification;
 - stale-plan rejection;
+- rejection of a stale, out-of-scope, or malformed schema snapshot;
 - no change when the same generated and existing inputs are compared again;
 - deterministic plan JSON, proposal IDs, and unified diff.
 
@@ -623,6 +653,20 @@ Place stub `aws` and `gradlew` executables first on `PATH` and verify:
 - no database CLI or DDL/DML command is invoked;
 - Gradle always runs with `--no-daemon`;
 - missing environment, user-home, and AWS inputs stop without prompting for or echoing a Secret.
+
+### Schema Snapshot Tests
+
+Compile and run `schema-snapshot.java` against a fixture JDBC driver that exposes deterministic `DatabaseMetaData` through Java dynamic proxies. Verify:
+
+- PostgreSQL schema and MySQL catalog filtering;
+- table and column ordering;
+- JDBC and database-native type names, size, scale, nullable, defaults, remarks, auto-increment, and primary-key sequence;
+- byte-identical JSON on repeated runs;
+- explicit unknown values when a driver omits optional metadata;
+- rejection of an out-of-scope table or mismatched database family;
+- absence of URL, host, user, password, token, AWS identifier, classpath, and raw credential-bearing exception sentinels;
+- no `Statement`, `PreparedStatement`, DDL, or DML execution;
+- Java 17 source-file launch with the classpath emitted by the Gradle helper task.
 
 ### Compile Fixtures
 
@@ -652,6 +696,7 @@ When Docker is available, run PostgreSQL and MySQL integration tests using Testc
 - initialize fixture schema with a disposable administrator;
 - run CodeGen with a separate read-only metadata user;
 - execute the actual `domaCodeGenDomaSyncEntity` task;
+- execute the actual metadata snapshot helper with the same JDBC driver;
 - validate comments, nullability, types, single and composite primary keys;
 - prove the CodeGen user cannot execute DDL or DML;
 - merge and compile Java/Kotlin candidates;
@@ -664,7 +709,7 @@ If Docker is unavailable, mark this layer explicitly skipped. Never describe a s
 - Parse frontmatter and confirm directory/frontmatter names match.
 - Validate `agents/openai.yaml` against existing repository conventions.
 - Resolve every linked reference and script.
-- Run `bash -n` and `python3 -m py_compile`.
+- Run `bash -n`, `python3 -m py_compile`, and Java 17 source-file compile/launch checks.
 - Run every deterministic unit and fixture test.
 - Verify `npx skills add . --list` discovers the new and existing skills.
 - Copy-install only `doma-sync-entities-from-database` in a disposable directory.
@@ -706,6 +751,7 @@ The implementation must recheck mutable details against current official sources
 - [Doma CodeGen Plugin `v3.2.2` entity configuration](https://github.com/domaframework/doma-codegen-plugin/blob/v3.2.2/codegen/src/main/java/org/seasar/doma/gradle/codegen/extension/EntityConfig.java)
 - [Gradle build environment and Provider guidance](https://docs.gradle.org/current/userguide/build_environment.html)
 - [Gradle `ProviderFactory`](https://docs.gradle.org/current/javadoc/org/gradle/api/provider/ProviderFactory.html)
+- [Java `DatabaseMetaData`](https://docs.oracle.com/en/java/javase/17/docs/api/java.sql/java/sql/DatabaseMetaData.html)
 - [AWS CLI `get-caller-identity`](https://docs.aws.amazon.com/cli/latest/reference/sts/get-caller-identity.html)
 - [AWS CLI `describe-db-instances`](https://docs.aws.amazon.com/cli/latest/reference/rds/describe-db-instances.html)
 - [AWS CLI `describe-db-clusters`](https://docs.aws.amazon.com/cli/latest/reference/rds/describe-db-clusters.html)
