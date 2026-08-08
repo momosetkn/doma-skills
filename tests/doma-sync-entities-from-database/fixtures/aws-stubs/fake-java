@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+
+with open(os.environ["FAKE_CALL_LOG"], "a", encoding="utf-8") as handle:
+    handle.write("java|" + "|".join(sys.argv[1:]) + "\n")
+expected = {
+    "DOMA_CODEGEN_DB_URL": "EXPECTED_DB_URL",
+    "DOMA_CODEGEN_DB_USER": "EXPECTED_DB_USER",
+    "DOMA_CODEGEN_DB_PASSWORD": "EXPECTED_DB_PASSWORD",
+}
+if any(os.environ.get(actual) != os.environ.get(wanted) for actual, wanted in expected.items()):
+    print("credential environment mismatch", file=sys.stderr)
+    raise SystemExit(92)
+output = Path(os.environ["DOMA_CODEGEN_SCHEMA_SNAPSHOT"])
+output.parent.mkdir(parents=True, exist_ok=True)
+content = os.environ.get("FAKE_SNAPSHOT_SECRET")
+if content is None:
+    content = json.dumps({"format_version": 1, "database": os.environ["DOMA_CODEGEN_DB_KIND"], "tables": []})
+output.write_text(content + "\n", encoding="utf-8")
+if os.environ.get("FAKE_JAVA_EXIT"):
+    raise SystemExit(int(os.environ["FAKE_JAVA_EXIT"]))
+if os.environ.get("FAKE_LEAK_OUTPUT") == "true":
+    print("stdout=" + os.environ["DOMA_CODEGEN_DB_PASSWORD"])
+    print("stderr=" + os.environ["DOMA_CODEGEN_DB_PASSWORD"], file=sys.stderr)

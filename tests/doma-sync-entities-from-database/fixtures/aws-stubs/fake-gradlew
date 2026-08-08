@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+
+def log(line):
+    with open(os.environ["FAKE_CALL_LOG"], "a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+for value in (os.environ.get("FAKE_SECRET_PASSWORD", ""), os.environ.get("FAKE_IAM_TOKEN", "")):
+    if value and any(value in arg for arg in sys.argv[1:]):
+        raise SystemExit(91)
+
+log(Path(sys.argv[0]).name + "|" + "|".join(sys.argv[1:]))
+task = sys.argv[-1]
+root = Path.cwd()
+if task == "domaSyncWriteCodeGenClasspath":
+    output = root / "build/doma-codegen/codegen-classpath.txt"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("fixture-classpath\n", encoding="utf-8")
+    redirected = os.environ.get("FAKE_REDIRECT_AFTER_CLASSPATH")
+    if redirected:
+        import shutil
+        shutil.rmtree(root / "build/doma-codegen")
+        external = Path(redirected)
+        external.mkdir(parents=True, exist_ok=True)
+        (external / "keep.txt").write_text("must survive\n", encoding="utf-8")
+        (root / "build/doma-codegen").symlink_to(external, target_is_directory=True)
+elif task == "domaCodeGenDomaSyncEntity":
+    expected = {
+        "DOMA_SYNC_JDBC_URL": "EXPECTED_DB_URL",
+        "DOMA_SYNC_JDBC_USER": "EXPECTED_DB_USER",
+        "DOMA_SYNC_JDBC_PASSWORD": "EXPECTED_DB_PASSWORD",
+    }
+    if any(os.environ.get(actual) != os.environ.get(wanted) for actual, wanted in expected.items()):
+        print("credential environment mismatch", file=sys.stderr)
+        raise SystemExit(92)
+    redirected = os.environ.get("FAKE_REDIRECT_GENERATED")
+    if redirected:
+        external = Path(redirected)
+        external.mkdir(parents=True, exist_ok=True)
+        (external / "keep.txt").write_text("must survive\n", encoding="utf-8")
+        (root / "build/doma-codegen/generated").symlink_to(external, target_is_directory=True)
+    else:
+        output = root / "build/doma-codegen/generated/example/Generated.java"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(os.environ.get("FAKE_GENERATED_SECRET", "class Generated {}\n"), encoding="utf-8")
+    if os.environ.get("FAKE_ENTITY_EXIT"):
+        raise SystemExit(int(os.environ["FAKE_ENTITY_EXIT"]))
+if os.environ.get("FAKE_LEAK_OUTPUT") == "true" and os.environ.get("DOMA_SYNC_JDBC_PASSWORD"):
+    print("stdout=" + os.environ["DOMA_SYNC_JDBC_PASSWORD"])
+    print("stderr=" + os.environ["DOMA_SYNC_JDBC_PASSWORD"], file=sys.stderr)
