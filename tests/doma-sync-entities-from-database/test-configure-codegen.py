@@ -152,6 +152,95 @@ domaCodeGen { register("domaSync") { url.set("jdbc:postgresql://host/db") } }
             self.assertNotIn(SENTINEL, combined)
             self.assertFalse((project / "build/doma-codegen/configure-plan.json").exists())
 
+    def test_project_gradle_properties_credential_url_stops_without_echoing_value(self) -> None:
+        directory, project = self.make_project()
+        with directory:
+            credential_url = f"jdbc:postgresql://{SENTINEL}:password@db.example/app"
+            (project / "gradle.properties").write_text(
+                f"domaSyncJdbcUrl={credential_url}\n", encoding="utf-8"
+            )
+            result = run_configurator(project, *self.plan_args())
+            self.assertEqual(65, result.returncode)
+            self.assertNotIn(SENTINEL, result.stdout + result.stderr)
+            self.assertFalse((project / "build/doma-codegen/configure-plan.json").exists())
+
+    def test_credential_url_provider_is_rejected_in_generated_gradle(self) -> None:
+        directory, project = self.make_project()
+        with directory:
+            text = self.plan_fragment_text(self.create_plan(project))
+            self.assertIn("Credential-bearing JDBC URL is unsafe", text)
+            self.assertIn("domaSyncJdbcUrl", text)
+
+    def test_apply_preserves_crlf_build_file_line_endings(self) -> None:
+        directory, project = self.make_project()
+        with directory:
+            build = project / "build.gradle.kts"
+            build.write_bytes(build.read_bytes().replace(b"\n", b"\r\n"))
+            plan = self.create_plan(project)
+            applied = run_configurator(project, "apply", "--plan", str(plan))
+            self.assertEqual(0, applied.returncode, applied.stderr)
+            content = build.read_bytes()
+            self.assertIn(b"\r\n", content)
+            self.assertNotIn(b"\n", content.replace(b"\r\n", b""))
+            planned = run_configurator(project, *self.plan_args())
+            self.assertEqual(0, planned.returncode, planned.stderr)
+
+    def test_missing_codegen_driver_is_restored_after_initial_apply(self) -> None:
+        directory, project = self.make_project()
+        with directory:
+            first_plan = self.create_plan(project)
+            self.assertEqual(0, run_configurator(project, "apply", "--plan", str(first_plan)).returncode)
+            build = project / "build.gradle.kts"
+            coordinate = 'domaCodeGen("org.postgresql:postgresql:42.7.10")'
+            build.write_text(build.read_text(encoding="utf-8").replace(coordinate, ""), encoding="utf-8")
+            repaired_plan = self.create_plan(project)
+            self.assertEqual(0, run_configurator(project, "apply", "--plan", str(repaired_plan)).returncode)
+            self.assertIn(coordinate, build.read_text(encoding="utf-8"))
+
+    def test_mismatched_codegen_plugin_and_driver_are_repaired(self) -> None:
+        directory, project = self.make_project()
+        with directory:
+            build = project / "build.gradle.kts"
+            build.write_text('''plugins {
+    id("org.domaframework.doma.codegen") version "3.1.0"
+}
+dependencies {
+    domaCodeGen("org.postgresql:postgresql:42.7.9")
+}
+''', encoding="utf-8")
+            plan = self.create_plan(project)
+            self.assertEqual(0, run_configurator(project, "apply", "--plan", str(plan)).returncode)
+            text = build.read_text(encoding="utf-8")
+            self.assertIn('id("org.domaframework.doma.codegen") version "3.2.2"', text)
+            self.assertIn('domaCodeGen("org.postgresql:postgresql:42.7.10")', text)
+            self.assertNotIn("3.1.0", text)
+            self.assertNotIn("42.7.9", text)
+
+    def test_gradle_7_wrapper_stops_without_write(self) -> None:
+        directory, project = self.make_project()
+        with directory:
+            wrapper = project / "gradle/wrapper/gradle-wrapper.properties"
+            wrapper.parent.mkdir(parents=True)
+            wrapper.write_text("distributionUrl=https\\://services.gradle.org/distributions/gradle-7.6-bin.zip\n", encoding="utf-8")
+            before = (project / "build.gradle.kts").read_bytes()
+            result = run_configurator(project, *self.plan_args())
+            self.assertEqual(65, result.returncode)
+            self.assertIn("Gradle 8+", result.stderr)
+            self.assertEqual(before, (project / "build.gradle.kts").read_bytes())
+            self.assertFalse((project / "build/doma-codegen/configure-plan.json").exists())
+
+    def test_java_11_toolchain_stops_without_write(self) -> None:
+        directory, project = self.make_project(extra="""
+java { toolchain { languageVersion.set(JavaLanguageVersion.of(11)) } }
+""")
+        with directory:
+            before = (project / "build.gradle.kts").read_bytes()
+            result = run_configurator(project, *self.plan_args())
+            self.assertEqual(65, result.returncode)
+            self.assertIn("Java 17+", result.stderr)
+            self.assertEqual(before, (project / "build.gradle.kts").read_bytes())
+            self.assertFalse((project / "build/doma-codegen/configure-plan.json").exists())
+
     def test_ordinary_build_guard_is_present(self) -> None:
         directory, project = self.make_project()
         with directory:

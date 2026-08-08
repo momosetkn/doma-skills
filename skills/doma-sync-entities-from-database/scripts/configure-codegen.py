@@ -19,6 +19,7 @@ EXIT_INVALID = 64
 EXIT_UNSAFE = 65
 EXIT_STALE = 66
 MARKER = "doma-sync-entities-from-database"
+CREDENTIAL_URL_PATTERN = re.compile(r"jdbc:[^\s'\"]+://[^/@\s'\"]+@", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -203,13 +204,14 @@ def _safe_child(root: Path, candidate: Path) -> Path:
 
 def _read_text(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            return handle.read()
     except UnicodeDecodeError:
         raise SafetyError("build inputs must be UTF-8 text")
 
 
 def _has_secret_literal(project: Path, source: str) -> bool:
-    if re.search(r"jdbc:[^\s'\"]+://[^\s'\"]+@", source, re.IGNORECASE):
+    if CREDENTIAL_URL_PATTERN.search(source):
         return True
     properties = project / "gradle.properties"
     if not properties.exists():
@@ -217,10 +219,32 @@ def _has_secret_literal(project: Path, source: str) -> bool:
     if properties.is_symlink():
         raise SafetyError("gradle.properties symlink is unsafe")
     text = _read_text(properties)
-    return any(
+    return bool(CREDENTIAL_URL_PATTERN.search(text)) or any(
         re.match(r"\s*(?:.*password.*|.*token.*|.*secret.*|.*aws.*key.*)\s*=", line, re.IGNORECASE)
         for line in text.splitlines()
     )
+
+
+def _assert_supported_prerequisites(spec: BuildSpec, source: str) -> None:
+    wrapper = spec.project_root / "gradle/wrapper/gradle-wrapper.properties"
+    if wrapper.exists():
+        if wrapper.is_symlink():
+            raise SafetyError("Gradle wrapper properties symlink is unsafe")
+        match = re.search(r"gradle-(\d+)(?:\.\d+)*(?:-[A-Za-z0-9]+)?\.zip", _read_text(wrapper))
+        if match and int(match.group(1)) < 8:
+            raise SafetyError("Gradle 8+ is required by Doma CodeGen")
+    java_versions = [
+        int(version)
+        for pattern in (
+            r"JavaLanguageVersion\.of\(\s*(\d+)",
+            r"jvmToolchain\(\s*(\d+)",
+            r"JavaVersion\.VERSION_(\d+)",
+            r"jvmTarget\s*=\s*['\"]?(\d+)",
+        )
+        for version in re.findall(pattern, source)
+    ]
+    if java_versions and min(java_versions) < 17:
+        raise SafetyError("Java 17+ is required by Doma CodeGen")
 
 
 def _kotlin_managed(spec: BuildSpec, metamodel: bool) -> str:
@@ -239,7 +263,13 @@ tasks.register("domaSyncWriteCodeGenClasspath") {{
 if (gradle.startParameter.taskNames.any {{ it.substringAfterLast(":").startsWith("domaCodeGenDomaSync") }}) {{
     domaCodeGen {{
         register("domaSync") {{
-            url.set(providers.environmentVariable("DOMA_SYNC_JDBC_URL").orElse(providers.gradleProperty("domaSyncJdbcUrl")))
+            val domaSyncJdbcUrl = providers.environmentVariable("DOMA_SYNC_JDBC_URL").orElse(providers.gradleProperty("domaSyncJdbcUrl")).map {{ jdbcUrl ->
+                if (Regex("""jdbc:[^\\s]+://[^/@\\s]+@""", RegexOption.IGNORE_CASE).containsMatchIn(jdbcUrl)) {{
+                    throw GradleException("Credential-bearing JDBC URL is unsafe")
+                }}
+                jdbcUrl
+            }}
+            url.set(domaSyncJdbcUrl)
             user.set(providers.environmentVariable("DOMA_SYNC_JDBC_USER").orElse(providers.gradleProperty("domaSyncJdbcUser")))
             password.set(providers.environmentVariable("DOMA_SYNC_JDBC_PASSWORD").orElse(providers.gradleProperty("domaSyncJdbcPassword")))
             sourceDir.set(layout.projectDirectory.dir("build/doma-codegen/generated"))
@@ -275,7 +305,13 @@ tasks.register('domaSyncWriteCodeGenClasspath') {{
 if (gradle.startParameter.taskNames.any {{ it.tokenize(':').last().startsWith('domaCodeGenDomaSync') }}) {{
     domaCodeGen {{
         register('domaSync') {{
-            url.set(providers.environmentVariable('DOMA_SYNC_JDBC_URL').orElse(providers.gradleProperty('domaSyncJdbcUrl')))
+            def domaSyncJdbcUrl = providers.environmentVariable('DOMA_SYNC_JDBC_URL').orElse(providers.gradleProperty('domaSyncJdbcUrl')).map {{ jdbcUrl ->
+                if (jdbcUrl =~ /(?i)jdbc:[^\\s]+:\\/\\/[^\\/@\\s]+@/) {{
+                    throw new GradleException('Credential-bearing JDBC URL is unsafe')
+                }}
+                jdbcUrl
+            }}
+            url.set(domaSyncJdbcUrl)
             user.set(providers.environmentVariable('DOMA_SYNC_JDBC_USER').orElse(providers.gradleProperty('domaSyncJdbcUser')))
             password.set(providers.environmentVariable('DOMA_SYNC_JDBC_PASSWORD').orElse(providers.gradleProperty('domaSyncJdbcPassword')))
             sourceDir.set(layout.projectDirectory.dir('build/doma-codegen/generated'))
@@ -296,15 +332,23 @@ if (gradle.startParameter.taskNames.any {{ it.tokenize(':').last().startsWith('d
 
 
 def _plugin_line(spec: BuildSpec) -> str:
+    return f"    // {MARKER}:plugin\n    {_plugin_declaration(spec)}\n"
+
+
+def _plugin_declaration(spec: BuildSpec) -> str:
     if spec.dsl == "kotlin":
-        return f'    // {MARKER}:plugin\n    id("org.domaframework.doma.codegen") version "{spec.codegen_version}"\n'
-    return f"    // {MARKER}:plugin\n    id 'org.domaframework.doma.codegen' version '{spec.codegen_version}'\n"
+        return f'id("org.domaframework.doma.codegen") version "{spec.codegen_version}"'
+    return f"id 'org.domaframework.doma.codegen' version '{spec.codegen_version}'"
 
 
 def _driver_line(spec: BuildSpec) -> str:
+    return f"    // {MARKER}:driver\n    {_driver_declaration(spec)}\n"
+
+
+def _driver_declaration(spec: BuildSpec) -> str:
     if spec.dsl == "kotlin":
-        return f'    // {MARKER}:driver\n    domaCodeGen("{spec.driver_coordinate}")\n'
-    return f"    // {MARKER}:driver\n    domaCodeGen '{spec.driver_coordinate}'\n"
+        return f'domaCodeGen("{spec.driver_coordinate}")'
+    return f"domaCodeGen '{spec.driver_coordinate}'"
 
 
 def _add_to_block(source: str, span: BuildSpan | None, name: str, line: str) -> TextEdit:
@@ -313,9 +357,20 @@ def _add_to_block(source: str, span: BuildSpan | None, name: str, line: str) -> 
     return TextEdit(span.end - 1, span.end - 1, line)
 
 
+def _matching_declarations(source: str, spec: BuildSpec, kind: Literal["plugin", "driver"]) -> list[re.Match[str]]:
+    if kind == "plugin":
+        pattern = r'\bid\(\s*["\']org\.domaframework\.doma\.codegen["\']\s*\)\s*version\s*["\'][^"\']+["\']'
+    elif spec.dsl == "kotlin":
+        pattern = r'\bdomaCodeGen\s*\(\s*"[^"]+"\s*\)'
+    else:
+        pattern = r"\bdomaCodeGen\s+['\"][^'\"]+['\"]"
+    return list(re.finditer(pattern, source))
+
+
 def _edits_for(spec: BuildSpec, source: str, metamodel: bool) -> tuple[TextEdit, ...]:
     if _has_secret_literal(spec.project_root, source):
         raise SafetyError("credential-bearing build configuration must be removed before planning")
+    _assert_supported_prerequisites(spec, source)
     managed = find_managed_region(source, "begin")
     if "domaSync" in source and managed is None:
         raise SafetyError("unmanaged domaSync configuration is ambiguous")
@@ -327,16 +382,34 @@ def _edits_for(spec: BuildSpec, source: str, metamodel: bool) -> tuple[TextEdit,
     if re.search(r"(?s)\bplugins\s*\{.*?\bid\s*\(\s*[^\s\"']", source):
         raise SafetyError("dynamic Gradle plugin or dependency structure is unsafe")
     edits: list[TextEdit] = []
-    if "org.domaframework.doma.codegen" not in source:
+    plugin_matches = _matching_declarations(source, spec, "plugin")
+    if len(plugin_matches) > 1:
+        raise SafetyError("multiple Doma CodeGen plugin declarations are ambiguous")
+    if not plugin_matches:
         edits.append(_add_to_block(source, plugins, "plugins", _plugin_line(spec)))
-    if "domaCodeGen" not in source:
+    elif plugin_matches[0].group() != _plugin_declaration(spec):
+        match = plugin_matches[0]
+        edits.append(TextEdit(match.start(), match.end(), _plugin_declaration(spec)))
+    driver_matches = _matching_declarations(source, spec, "driver")
+    if len(driver_matches) > 1:
+        raise SafetyError("multiple domaCodeGen driver declarations are ambiguous")
+    if not driver_matches:
         edits.append(_add_to_block(source, dependencies, "dependencies", _driver_line(spec)))
+    elif driver_matches[0].group() != _driver_declaration(spec):
+        match = driver_matches[0]
+        edits.append(TextEdit(match.start(), match.end(), _driver_declaration(spec)))
     rendered = _kotlin_managed(spec, metamodel) if spec.dsl == "kotlin" else _groovy_managed(spec, metamodel)
+    newline = "\r\n" if "\r\n" in source else "\n"
+    if newline != "\n":
+        rendered = rendered.replace("\n", newline)
     if managed is None:
         edits.append(TextEdit(len(source), len(source), "\n" + rendered + "\n"))
     elif source[managed.start:managed.end] != rendered:
         edits.append(TextEdit(managed.start, managed.end, rendered))
-    return tuple(sorted(edits, key=lambda edit: (edit.start, edit.end), reverse=True))
+    normalized_edits = tuple(
+        TextEdit(edit.start, edit.end, edit.replacement.replace("\n", newline)) for edit in edits
+    )
+    return tuple(sorted(normalized_edits, key=lambda edit: (edit.start, edit.end), reverse=True))
 
 
 def _apply_edits(source: str, edits: tuple[TextEdit, ...]) -> str:
@@ -399,7 +472,7 @@ def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.is_symlink():
         raise SafetyError("refusing to write through a symlink")
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=str(path.parent), delete=False) as handle:
         handle.write(content)
         temporary = Path(handle.name)
     temporary.replace(path)
