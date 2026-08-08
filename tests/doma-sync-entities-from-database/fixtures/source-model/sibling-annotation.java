@@ -1,3 +1,3 @@
 package example.shadow;
 
-public @interface Entity {}
+@interface Entity {}
