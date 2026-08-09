@@ -18,7 +18,7 @@ public class Employee {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "employee_id")
-    Integer id;
+    Integer employeeId;
 
     /** Display name */
     @Column(name = "display_name")
@@ -29,14 +29,14 @@ public class Employee {
     @Column(name = "version")
     Integer version;
 
-    /** Returns the id. */
-    public Integer getId() {
-        return id;
+    /** Returns the employeeId. */
+    public Integer getEmployeeId() {
+        return employeeId;
     }
 
-    /** Sets the id. */
-    public void setId(Integer id) {
-        this.id = id;
+    /** Sets the employeeId. */
+    public void setEmployeeId(Integer employeeId) {
+        this.employeeId = employeeId;
     }
 
     /** Returns the displayName. */

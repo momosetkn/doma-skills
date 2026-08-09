@@ -62,9 +62,9 @@ def apply_plan(
     root = _project_root(project_root)
     merge_plan = load_plan(plan) if isinstance(plan, (str, Path)) else plan
     _validate_plan_object(merge_plan)
-    source_roots, language = _canonical_planning_request(root, merge_plan)
+    source_roots = _canonical_planning_request(root, merge_plan)
     _verify_hashes(root, merge_plan)
-    _verify_canonical_plan(root, merge_plan, source_roots, language)
+    _verify_canonical_plan(root, merge_plan, source_roots)
     approved = frozenset(approvals)
     review_by_id = {
         finding.finding_id: finding
@@ -140,6 +140,8 @@ def apply_plan(
 def _validate_plan_object(plan: MergePlan) -> None:
     if plan.format_version != PLAN_FORMAT_VERSION or plan.project_root != ".":
         raise PlanInputError("unsupported merge plan")
+    if plan.language not in {"auto", "java", "kotlin"}:
+        raise PlanInputError("invalid merge plan language")
     if len(plan.schema_snapshot_sha256) != 64:
         raise PlanInputError("invalid schema snapshot hash")
     _validate_hash_pairs(plan.source_hashes, "source")
@@ -179,7 +181,7 @@ def _validate_hash_pairs(pairs: Sequence[tuple[str, str]], name: str) -> None:
 def _canonical_planning_request(
     root: Path,
     plan: MergePlan,
-) -> tuple[tuple[Path, ...], str]:
+) -> tuple[Path, ...]:
     _strict_subdirectory(root, "build/doma-codegen/generated", "generated root")
     generated_root_text = "build/doma-codegen/generated"
     supported = {
@@ -187,12 +189,13 @@ def _canonical_planning_request(
         "src/main/kotlin": root / "src/main/kotlin",
     }
     selected_roots: set[str] = set()
-    languages: set[str] = set()
+    generated_languages: set[str] = set()
+    source_languages: set[str] = set()
 
     for path, _ in plan.generated_hashes:
         if not _plan_path_below(path, generated_root_text):
             raise UnsafeProjectError("planned generated input is outside the managed root")
-        languages.add(_source_language(path))
+        generated_languages.add(_source_language(path))
     for path, _ in plan.source_hashes:
         source_root = next(
             (name for name in supported if _plan_path_below(path, name)), None
@@ -200,7 +203,7 @@ def _canonical_planning_request(
         if source_root is None:
             raise UnsafeProjectError("planned source input is outside supported source roots")
         selected_roots.add(source_root)
-        languages.add(_source_language(path))
+        source_languages.add(_source_language(path))
 
     for finding in plan.findings:
         existing_root = finding.database.get("existing_root")
@@ -229,7 +232,12 @@ def _canonical_planning_request(
         ):
             raise UnsafeProjectError("proposal generated path is outside the managed root")
 
-    for language in languages:
+    comparison_languages = (
+        {plan.language}
+        if plan.language != "auto"
+        else generated_languages | source_languages
+    )
+    for language in comparison_languages:
         selected_roots.add("src/main/" + language)
     if not selected_roots:
         selected_roots.update(
@@ -242,27 +250,30 @@ def _canonical_planning_request(
     )
     if not source_roots:
         raise UnsafeProjectError("no supported canonical source root was discovered")
-    language = (
-        next(iter(languages)) if len(languages) == 1 else "auto"
-    )
-    return source_roots, language
+    return source_roots
 
 
 def _verify_canonical_plan(
     root: Path,
     plan: MergePlan,
     source_roots: Sequence[Path],
-    language: str,
 ) -> None:
     generated_root = root / "build/doma-codegen/generated"
-    expected = build_plan(
-        root,
-        root / SNAPSHOT_PATH,
-        generated_root,
-        tuple(source_roots),
-        language,
-    )
-    if plan != expected:
+    matches: list[str] = []
+    for language in ("java", "kotlin", "auto"):
+        try:
+            expected = build_plan(
+                root,
+                root / SNAPSHOT_PATH,
+                generated_root,
+                tuple(source_roots),
+                language,
+            )
+        except PlanInputError:
+            continue
+        if plan == expected:
+            matches.append(language)
+    if len(matches) != 1:
         raise PlanInputError("merge plan does not match the current canonical proposal")
 
 

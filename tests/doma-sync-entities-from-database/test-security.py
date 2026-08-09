@@ -99,6 +99,12 @@ class SecurityTests(unittest.TestCase):
         snapshot.parent.mkdir(parents=True)
         generated.parent.mkdir(parents=True)
         existing.parent.mkdir(parents=True)
+        (root / "build.gradle.kts").write_text(
+            "// doma-sync-entities-from-database:begin\n"
+            "languageType.set(org.seasar.doma.gradle.codegen.desc.LanguageType.JAVA)\n"
+            "entity { packageName.set(\"example\") }\n"
+            "// doma-sync-entities-from-database:end\n"
+        )
         snapshot.write_text(json.dumps(SAFE_SNAPSHOT, separators=(",", ":")) + "\n")
         generated.write_text(JAVA)
         existing.write_text(JAVA)

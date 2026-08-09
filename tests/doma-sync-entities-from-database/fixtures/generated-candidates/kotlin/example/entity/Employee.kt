@@ -18,7 +18,7 @@ class Employee {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "employee_id")
-    var id: Int = -1
+    var employeeId: Int = -1
 
     /** Display name */
     @Column(name = "display_name")

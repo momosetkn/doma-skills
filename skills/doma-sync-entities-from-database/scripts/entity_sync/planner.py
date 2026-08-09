@@ -24,11 +24,11 @@ from .kotlin_parser import (
     find_kotlin_domain_declarations,
     parse_kotlin,
 )
-from .lexer import lex_java, lex_kotlin
+from .lexer import Token, lex_java, lex_kotlin
 from .model import AnnotationModel, EntityModel, ParsedEntity, PropertyModel, SourceSpan, TableIdentity
 
 
-PLAN_FORMAT_VERSION = 1
+PLAN_FORMAT_VERSION = 2
 SNAPSHOT_PATH = "build/doma-codegen/schema-snapshot.json"
 _FINDING_ID_MARKER = "{finding_id}"
 _STATUS = {"SAFE", "REVIEW_REQUIRED", "BLOCKED"}
@@ -73,6 +73,11 @@ _JDBC_FALLBACK_TYPES = {
     2011: "NClob", -16: "String", -15: "String", -9: "String",
 }
 _KOTLIN_BASIC_TYPES = {"Integer": "Int"}
+_KOTLIN_DEFAULTS = {
+    "Byte": "-1", "Short": "-1", "Int": "-1", "Long": "-1L",
+    "Float": "-1f", "Double": "-1.0",
+}
+_CODEGEN_MARKER = "doma-sync-entities-from-database"
 _SENSITIVE = re.compile(
     r"(?i)(?:\b(?:https?|jdbc:[a-z0-9]+)://|\b(?:user|password|passwd|token|access[_-]?key|secret)\s*[:=]|\bAKIA[0-9A-Z]{12,})"
 )
@@ -110,6 +115,7 @@ class Finding:
 class MergePlan:
     format_version: int
     project_root: Literal["."]
+    language: Literal["auto", "java", "kotlin"]
     schema_snapshot_sha256: str
     source_hashes: tuple[tuple[str, str], ...]
     generated_hashes: tuple[tuple[str, str], ...]
@@ -145,7 +151,13 @@ class _Table:
     identity: TableIdentity
     raw: dict[str, object]
     columns: tuple[dict[str, object], ...]
-    primary_key: tuple[dict[str, object], ...]
+    primary_key: tuple[dict[str, object], ...] | None
+
+
+@dataclass(frozen=True)
+class _CodeGenNaming:
+    package_name: str
+    language: Literal["java", "kotlin"]
 
 
 def build_plan(
@@ -183,15 +195,23 @@ def build_plan(
     tables = _validate_manifest(manifest)
     snapshot_hash = _sha(snapshot_bytes)
 
-    source_files = _collect_sources(root, source_roots, language)
+    reference_files = _collect_sources(root, source_roots, "auto")
     generated_files = _collect_sources(root, (generated_root,), language)
     if not generated_files and tables:
         raise PlanInputError("generated candidate directory contains no entity sources")
-    all_files = source_files + generated_files
+    all_files = reference_files + generated_files
     annotation_declarations = _annotation_context(all_files)
     domain_types = _domain_context(all_files, annotation_declarations)
-    existing_parsed, existing_failures = _parse_files(
-        source_files, domain_types, annotation_declarations, generated=False
+    reference_parsed, reference_failures = _parse_files(
+        reference_files, domain_types, annotation_declarations, generated=False
+    )
+    existing_parsed = tuple(
+        item for item in reference_parsed
+        if language == "auto" or item.file.language == language
+    )
+    existing_failures = tuple(
+        item for item in reference_failures
+        if language == "auto" or item.file.language == language
     )
     generated_parsed, generated_failures = _parse_files(
         generated_files, domain_types, annotation_declarations, generated=True
@@ -221,7 +241,7 @@ def build_plan(
                 "Choose one mapping explicitly; the database cannot choose an application type.", (),
             ))
 
-    existing_classes = _by_class(existing_parsed)
+    existing_classes = _by_class(reference_parsed)
     table_identities = {table.identity for table in tables}
     for candidate in generated_parsed:
         if candidate.parsed.entity.table not in table_identities:
@@ -232,11 +252,14 @@ def build_plan(
                 "Regenerate candidates from exactly this schema snapshot.", (),
             ))
 
-    reference_files = source_files
     source_root_names = tuple(_relative(root, item) for item in source_roots)
     for table in tables:
         candidate = generated_by_table.get(table.identity)
         if candidate is None:
+            metadata_finding = _required_metadata_finding(table, candidate)
+            if metadata_finding is not None:
+                findings.append(metadata_finding)
+                continue
             findings.append(_make_finding(
                 "BLOCKED", "missing-generated-entity", SNAPSHOT_PATH, table.identity, None,
                 {"table": table.raw}, None, None,
@@ -244,11 +267,12 @@ def build_plan(
                 "Regenerate entities; do not infer a class or file name from the table name.", (),
             ))
             continue
-        if candidate.parsed.entity.unsupported_reasons or not candidate.parsed.entity.generated_only:
-            findings.append(_unsupported_finding(candidate, table, generated=True))
-            continue
         existing = existing_by_table.get(table.identity)
         if existing is None:
+            metadata_finding = _required_metadata_finding(table, candidate)
+            if metadata_finding is not None:
+                findings.append(metadata_finding)
+                continue
             same_class = existing_classes.get(_class_key(candidate.parsed.entity), ())
             if same_class:
                 findings.append(_make_finding(
@@ -259,9 +283,13 @@ def build_plan(
                 ))
                 continue
             finding = _new_entity_finding(
-                root, table, candidate, source_roots, source_root_names, source_files
+                root, table, candidate, source_roots, source_root_names,
+                reference_files,
             )
             findings.append(finding)
+            continue
+        if candidate.parsed.entity.unsupported_reasons or not candidate.parsed.entity.generated_only:
+            findings.append(_unsupported_finding(candidate, table, generated=True))
             continue
         if existing.parsed.entity.class_name != candidate.parsed.entity.class_name:
             findings.append(_make_finding(
@@ -276,8 +304,16 @@ def build_plan(
             findings.append(_unsupported_finding(existing, table, generated=False))
             findings.extend(_blocked_changes_in_unsupported_source(table, existing, candidate))
             continue
-        file_findings = _compare_entity(table, existing, candidate, reference_files)
-        findings.extend(_fail_closed_file(file_findings))
+        metadata_findings, incomplete_columns, primary_key_incomplete = (
+            _existing_metadata_findings(table, existing)
+        )
+        findings.extend(metadata_findings)
+        file_findings, non_sealing = _block_metadata_dependent_edits(
+            _compare_entity(table, existing, candidate, reference_files),
+            incomplete_columns,
+            primary_key_incomplete,
+        )
+        findings.extend(_fail_closed_file(file_findings, non_sealing))
 
     for existing in existing_parsed:
         identity = existing.parsed.entity.table
@@ -297,8 +333,9 @@ def build_plan(
     return MergePlan(
         PLAN_FORMAT_VERSION,
         ".",
+        language,
         snapshot_hash,
-        tuple(sorted((item.path, item.sha256) for item in source_files)),
+        tuple(sorted((item.path, item.sha256) for item in reference_files)),
         tuple(sorted((item.path, item.sha256) for item in generated_files)),
         ordered,
     )
@@ -309,6 +346,7 @@ def plan_json(plan: MergePlan) -> str:
     value = {
         "format_version": plan.format_version,
         "project_root": plan.project_root,
+        "language": plan.language,
         "schema_snapshot_sha256": plan.schema_snapshot_sha256,
         "source_hashes": [list(item) for item in plan.source_hashes],
         "generated_hashes": [list(item) for item in plan.generated_hashes],
@@ -325,12 +363,15 @@ def load_plan(path: Path | str) -> MergePlan:
     _reject_sensitive(raw)
     value = _load_json(raw)
     if not isinstance(value, dict) or set(value) != {
-        "format_version", "project_root", "schema_snapshot_sha256", "source_hashes",
-        "generated_hashes", "findings",
+        "format_version", "project_root", "language", "schema_snapshot_sha256",
+        "source_hashes", "generated_hashes", "findings",
     }:
         raise PlanInputError("invalid merge plan fields")
     if value["format_version"] != PLAN_FORMAT_VERSION or value["project_root"] != ".":
         raise PlanInputError("unsupported merge plan version or project root")
+    language = value["language"]
+    if language not in {"auto", "java", "kotlin"}:
+        raise PlanInputError("invalid merge plan language")
     snapshot_hash = _hash_value(value["schema_snapshot_sha256"])
     source_hashes = _hash_pairs(value["source_hashes"])
     generated_hashes = _hash_pairs(value["generated_hashes"])
@@ -340,7 +381,10 @@ def load_plan(path: Path | str) -> MergePlan:
     findings = tuple(_load_finding(item) for item in raw_findings)
     if tuple(sorted(findings, key=_finding_sort_key)) != findings:
         raise PlanInputError("findings are not in deterministic order")
-    return MergePlan(1, ".", snapshot_hash, source_hashes, generated_hashes, findings)
+    return MergePlan(
+        PLAN_FORMAT_VERSION, ".", language, snapshot_hash,
+        source_hashes, generated_hashes, findings,
+    )
 
 
 def render_diff(plan: MergePlan) -> str:
@@ -517,40 +561,44 @@ def _compare_entity(
             if executable else "Remove or migrate handwritten references manually before replanning.", edits,
         ))
 
-    db_pk = tuple(str(item["column"]) for item in table.primary_key)
-    candidate_pk = tuple(
-        prop.column for prop in new.properties if _annotation(prop, "org.seasar.doma.Id") is not None
-    )
-    if set(candidate_pk) != set(db_pk) or len(candidate_pk) != len(db_pk):
-        findings.append(_make_finding(
-            "BLOCKED", "candidate-primary-key-mismatch", path, table.identity, None,
-            {**database_base, "primary_key": list(table.primary_key)}, None, ", ".join(candidate_pk),
-            "Generated @Id membership does not exactly match the database primary key.",
-            "Regenerate candidates; never infer primary-key membership from names.", (),
-        ))
-    else:
-        id_edits: list[Edit] = []
-        existing_membership: list[str] = []
-        for new_prop in new.properties:
-            old_prop = matches.get(new_prop.column)
-            if old_prop is None:
-                continue
-            old_id = _annotation(old_prop, "org.seasar.doma.Id")
-            new_id = _annotation(new_prop, "org.seasar.doma.Id")
-            if old_id is not None:
-                existing_membership.append(new_prop.column)
-            if (old_id is None) != (new_id is None):
-                id_edits.extend(_annotation_change_edits(
-                    existing, candidate, old_prop, new_prop, old_id, new_id
-                ))
-        if id_edits:
+    if table.primary_key is not None:
+        db_pk = tuple(str(item["column"]) for item in table.primary_key)
+        candidate_pk = tuple(
+            prop.column for prop in new.properties
+            if _annotation(prop, "org.seasar.doma.Id") is not None
+        )
+        if set(candidate_pk) != set(db_pk) or len(candidate_pk) != len(db_pk):
             findings.append(_make_finding(
-                "SAFE", "synchronize-primary-key", path, table.identity, None,
-                {**database_base, "primary_key": list(table.primary_key)},
-                ", ".join(existing_membership), ", ".join(db_pk),
-                "Every primary-key column is uniquely mapped; membership is synchronized atomically.",
-                "Apply the complete @Id membership change as one finding.", tuple(_dedupe_edits(id_edits)),
+                "BLOCKED", "candidate-primary-key-mismatch", path, table.identity, None,
+                {**database_base, "primary_key": list(table.primary_key)}, None,
+                ", ".join(candidate_pk),
+                "Generated @Id membership does not exactly match the database primary key.",
+                "Regenerate candidates; never infer primary-key membership from names.", (),
             ))
+        else:
+            id_edits: list[Edit] = []
+            existing_membership: list[str] = []
+            for new_prop in new.properties:
+                old_prop = matches.get(new_prop.column)
+                if old_prop is None:
+                    continue
+                old_id = _annotation(old_prop, "org.seasar.doma.Id")
+                new_id = _annotation(new_prop, "org.seasar.doma.Id")
+                if old_id is not None:
+                    existing_membership.append(new_prop.column)
+                if (old_id is None) != (new_id is None):
+                    id_edits.extend(_annotation_change_edits(
+                        existing, candidate, old_prop, new_prop, old_id, new_id
+                    ))
+            if id_edits:
+                findings.append(_make_finding(
+                    "SAFE", "synchronize-primary-key", path, table.identity, None,
+                    {**database_base, "primary_key": list(table.primary_key)},
+                    ", ".join(existing_membership), ", ".join(db_pk),
+                    "Every primary-key column is uniquely mapped; membership is synchronized atomically.",
+                    "Apply the complete @Id membership change as one finding.",
+                    tuple(_dedupe_edits(id_edits)),
+                ))
 
     for new_prop in new.properties:
         old_prop = matches.get(new_prop.column)
@@ -712,20 +760,41 @@ def _new_entity_finding(
                 {"table": table.raw, "column": column, "generated_path": candidate.file.path},
             )
 
-    candidate_mismatch = _new_entity_candidate_mismatch(table, candidate)
+    candidate_mismatch = _new_entity_candidate_mismatch(root, table, candidate)
     if candidate_mismatch is not None:
         return candidate_mismatch
+    if not _new_entity_candidate_is_generated_only(table, candidate):
+        return _unsupported_finding(candidate, table, generated=True)
 
     suffix = candidate.file.absolute.suffix
-    eligible = [source_root for source_root in source_roots if any(
-        item.absolute.suffix == suffix and item.root == _relative(root, source_root)
-        for item in existing_files
-    )]
-    if not eligible and len(source_roots) == 1:
-        eligible = [source_roots[0]]
     relative_candidate = candidate.file.absolute.relative_to(
         root / candidate.file.root
     )
+    candidate_fqcn = (
+        candidate.parsed.entity.package_name
+        + "."
+        + candidate.parsed.entity.class_name
+    )
+    class_collisions = [
+        item for item in existing_files
+        if candidate_fqcn in _top_level_type_declarations(item)
+    ]
+    if class_collisions:
+        collision = class_collisions[0]
+        return _make_finding(
+            "BLOCKED", "source-class-path-collision", collision.path,
+            table.identity, None,
+            {"table": table.raw, "generated_path": candidate.file.path,
+             "source_roots": list(source_root_names)},
+            None, None,
+            "A source declares the candidate's fully qualified top-level type.",
+            "Resolve the JVM class-name collision manually before creating the entity.", (),
+        )
+    expected_root = "src/main/java" if suffix == ".java" else "src/main/kotlin"
+    eligible = [
+        source_root for source_root in source_roots
+        if _relative(root, source_root) == expected_root
+    ]
     if len(eligible) != 1:
         return _make_finding(
             "BLOCKED", "ambiguous-source-root", candidate.file.path, table.identity, None,
@@ -755,6 +824,7 @@ def _new_entity_finding(
 
 
 def _new_entity_candidate_mismatch(
+    root: Path,
     table: _Table,
     candidate: _ParsedFile,
 ) -> Finding | None:
@@ -777,6 +847,42 @@ def _new_entity_candidate_mismatch(
             "Regenerate the complete candidate from the authoritative snapshot.", (),
         )
 
+    naming = _managed_codegen_naming(root)
+    expected_class = _codegen_class_name(table.identity.table)
+    expected_properties = {
+        str(column["name"]): _codegen_property_name(str(column["name"]))
+        for column in table.columns
+    }
+    expected_relative_path: str | None = None
+    if naming is not None and expected_class:
+        package_path = naming.package_name.replace(".", "/")
+        file_name = expected_class + candidate.file.absolute.suffix
+        expected_relative_path = file_name if not package_path else package_path + "/" + file_name
+    actual_relative_path = candidate.file.absolute.relative_to(
+        root / candidate.file.root
+    ).as_posix()
+    if (
+        naming is None
+        or naming.language != entity.language
+        or entity.package_name != naming.package_name
+        or not expected_class
+        or entity.class_name != expected_class
+        or expected_relative_path != actual_relative_path
+        or any(
+            candidate_columns[column].name != expected_name
+            for column, expected_name in expected_properties.items()
+        )
+    ):
+        return _make_finding(
+            "BLOCKED", "generated-identity-mismatch", path, table.identity, None,
+            {**database_base, "expected_class": expected_class,
+             "expected_properties": expected_properties,
+             "expected_relative_path": expected_relative_path},
+            None, None,
+            "The candidate property, class, package, language, or file identity is not the configured CodeGen output.",
+            "Restore the skill-managed CodeGen configuration and regenerate the candidate.", (),
+        )
+
     for column_name, column in db_columns.items():
         prop = candidate_columns[column_name]
         expected_type = _expected_basic_type(table, column, entity.language)
@@ -788,15 +894,27 @@ def _new_entity_candidate_mismatch(
                 "The candidate basic type is not the proven CodeGen type for the JDBC metadata.",
                 "Regenerate the candidate; do not infer an application type manually.", (),
             )
-        if entity.language == "kotlin" and prop.nullable is not bool(column["nullable"]):
-            return _make_finding(
-                "BLOCKED", "generated-nullability-mismatch", path, table.identity, column_name,
-                {**database_base, "column": column}, None, None,
-                "The candidate Kotlin nullability does not match the snapshot column.",
-                "Regenerate the candidate from the authoritative snapshot.", (),
+        if entity.language == "kotlin":
+            expected_nullable, expected_default = _expected_kotlin_property_shape(
+                column, expected_type
             )
+            actual_default = _kotlin_property_initializer(candidate, prop)
+            if prop.nullable is not expected_nullable:
+                return _make_finding(
+                    "BLOCKED", "generated-nullability-mismatch", path, table.identity, column_name,
+                    {**database_base, "column": column}, None, None,
+                    "The candidate Kotlin nullability is not the proven CodeGen resolver output.",
+                    "Regenerate the candidate from the authoritative snapshot.", (),
+                )
+            if actual_default != expected_default:
+                return _make_finding(
+                    "BLOCKED", "generated-default-mismatch", path, table.identity, column_name,
+                    {**database_base, "column": column}, None, None,
+                    "The candidate Kotlin initializer is not the proven CodeGen resolver default.",
+                    "Regenerate the candidate from the authoritative snapshot.", (),
+                )
 
-    db_pk = tuple(str(item["column"]) for item in table.primary_key)
+    db_pk = tuple(str(item["column"]) for item in (table.primary_key or ()))
     candidate_pk = tuple(
         prop.column
         for prop in entity.properties
@@ -805,7 +923,7 @@ def _new_entity_candidate_mismatch(
     if set(candidate_pk) != set(db_pk) or len(candidate_pk) != len(db_pk):
         return _make_finding(
             "BLOCKED", "candidate-primary-key-mismatch", path, table.identity, None,
-            {**database_base, "primary_key": list(table.primary_key)}, None, None,
+            {**database_base, "primary_key": list(table.primary_key or ())}, None, None,
             "The candidate @Id set does not exactly match the snapshot primary key.",
             "Regenerate the complete primary-key mapping.", (),
         )
@@ -838,7 +956,7 @@ def _new_entity_candidate_mismatch(
             )
         for qualified, kind in (
             ("org.seasar.doma.Version", "version-semantics"),
-            ("org.seasar.doma.TenantId", "tenant-id-semantics"),
+            ("org.seasar.doma.TenantId", "special-mapping"),
         ):
             if _annotation(prop, qualified) is not None:
                 return _make_finding(
@@ -855,22 +973,280 @@ def _expected_basic_type(
     column: dict[str, object],
     language: str,
 ) -> str | None:
-    type_name = str(column["type_name"]).casefold()
+    raw_type_name = column.get("type_name")
+    if not isinstance(raw_type_name, str) or not raw_type_name:
+        return None
+    type_name = raw_type_name.casefold()
     java_type = _STANDARD_TYPE_NAMES.get(type_name)
     if table.database == "postgresql":
         java_type = _POSTGRES_TYPE_NAMES.get(type_name, java_type)
     else:
         java_type = _MYSQL_TYPE_NAMES.get(type_name, java_type)
-        size = int(column["size"])
         if type_name in {"bit", "tinyint"}:
+            size = column.get("size")
+            if not isinstance(size, int) or isinstance(size, bool):
+                return None
             java_type = "Boolean" if size <= 1 else "Byte"
         elif type_name == "tinyint unsigned":
+            size = column.get("size")
+            if not isinstance(size, int) or isinstance(size, bool):
+                return None
             java_type = "Boolean" if size <= 1 else "Short"
     if java_type is None:
-        java_type = _JDBC_FALLBACK_TYPES.get(int(column["jdbc_type"]))
+        jdbc_type = column.get("jdbc_type")
+        if not isinstance(jdbc_type, int) or isinstance(jdbc_type, bool):
+            return None
+        java_type = _JDBC_FALLBACK_TYPES.get(jdbc_type)
     if java_type is None or language == "java":
         return java_type
     return _KOTLIN_BASIC_TYPES.get(java_type, java_type)
+
+
+def _expected_kotlin_property_shape(
+    column: dict[str, object], type_name: str
+) -> tuple[bool, str]:
+    default = _KOTLIN_DEFAULTS.get(type_name, "null")
+    nullable = column.get("nullable")
+    return nullable is True or default == "null", default
+
+
+def _kotlin_property_initializer(
+    candidate: _ParsedFile, prop: PropertyModel
+) -> str | None:
+    declaration = candidate.parsed.source[
+        prop.declaration_span.start:prop.declaration_span.end
+    ]
+    _, separator, initializer = declaration.partition("=")
+    return initializer.strip() if separator else None
+
+
+def _new_entity_candidate_is_generated_only(
+    table: _Table, candidate: _ParsedFile
+) -> bool:
+    entity = candidate.parsed.entity
+    if entity.generated_only:
+        return True
+    if entity.language != "kotlin" or not entity.unsupported_reasons:
+        return False
+    columns = {str(column["name"]): column for column in table.columns}
+    allowed: set[str] = set()
+    for prop in entity.properties:
+        column = columns.get(prop.column)
+        if column is None:
+            continue
+        expected_type = _expected_basic_type(table, column, "kotlin")
+        if expected_type is None:
+            continue
+        expected_nullable, expected_default = _expected_kotlin_property_shape(
+            column, expected_type
+        )
+        if expected_nullable and expected_default != "null":
+            allowed.add("handwritten initializer: " + prop.name)
+    return set(entity.unsupported_reasons).issubset(allowed)
+
+
+def _required_metadata_finding(
+    table: _Table, candidate: _ParsedFile | None
+) -> Finding | None:
+    primary_key_incomplete, column_gaps = _metadata_gaps(table)
+    missing = ["primary_key"] if primary_key_incomplete else []
+    missing.extend(
+        name + "." + field
+        for name, fields in column_gaps.items()
+        for field in fields
+    )
+    if not missing:
+        return None
+    path = candidate.file.path if candidate is not None else SNAPSHOT_PATH
+    return _make_finding(
+        "BLOCKED", "schema-metadata-incomplete", path, table.identity, None,
+        {"table": table.raw, "missing_facts": sorted(set(missing))},
+        None, None,
+        "Required JDBC metadata is unknown, so the generated candidate cannot be proven complete.",
+        "Refresh the schema snapshot with a driver that reports every required fact.", (),
+    )
+
+
+def _metadata_gaps(
+    table: _Table,
+) -> tuple[bool, dict[str, tuple[str, ...]]]:
+    column_gaps: dict[str, tuple[str, ...]] = {}
+    for column in table.columns:
+        name = str(column.get("name"))
+        missing: list[str] = []
+        for field, expected in (
+            ("jdbc_type", int),
+            ("type_name", str),
+            ("nullable", bool),
+            ("auto_increment", bool),
+        ):
+            value = column.get(field)
+            if (
+                not isinstance(value, expected)
+                or isinstance(value, bool) and expected is int
+                or expected is str and value == ""
+            ):
+                missing.append(field)
+        type_name = column.get("type_name")
+        if (
+            table.database == "mysql"
+            and isinstance(type_name, str)
+            and type_name.casefold() in {"bit", "tinyint", "tinyint unsigned"}
+            and (not isinstance(column.get("size"), int) or isinstance(column.get("size"), bool))
+        ):
+            missing.append("size")
+        if _expected_basic_type(table, column, "java") is None:
+            missing.append("mapped_type")
+        if missing:
+            column_gaps[name] = tuple(sorted(set(missing)))
+    return table.primary_key is None, column_gaps
+
+
+def _existing_metadata_findings(
+    table: _Table, existing: _ParsedFile
+) -> tuple[tuple[Finding, ...], dict[str, frozenset[str]], bool]:
+    primary_key_incomplete, column_gaps = _metadata_gaps(table)
+    findings: list[Finding] = []
+    if primary_key_incomplete:
+        findings.append(_make_finding(
+            "BLOCKED", "schema-metadata-incomplete", existing.file.path,
+            table.identity, None,
+            {"table": table.raw, "missing_facts": ["primary_key"]},
+            None, None,
+            "Primary-key metadata is unknown, so key synchronization cannot be proven.",
+            "Refresh the schema snapshot before changing @Id membership.", (),
+        ))
+    for column_name, fields in sorted(column_gaps.items()):
+        column = next(
+            item for item in table.columns if item.get("name") == column_name
+        )
+        findings.append(_make_finding(
+            "BLOCKED", "schema-metadata-incomplete", existing.file.path,
+            table.identity, column_name,
+            {
+                "table": table.raw,
+                "column": column,
+                "missing_facts": [column_name + "." + field for field in fields],
+            },
+            None, None,
+            "This column's JDBC metadata is unknown, so changes to its property cannot be proven.",
+            "Refresh the schema snapshot before changing this mapped property.", (),
+        ))
+    return (
+        tuple(findings),
+        {name: frozenset(fields) for name, fields in column_gaps.items()},
+        primary_key_incomplete,
+    )
+
+
+def _block_metadata_dependent_edits(
+    findings: Sequence[Finding],
+    incomplete_columns: dict[str, frozenset[str]],
+    primary_key_incomplete: bool,
+) -> tuple[tuple[Finding, ...], frozenset[str]]:
+    result: list[Finding] = []
+    non_sealing: set[str] = set()
+    for finding in findings:
+        affected = _has_incomplete_metadata_dependency(
+            finding, incomplete_columns, primary_key_incomplete
+        )
+        if not affected:
+            result.append(finding)
+            continue
+        if not finding.edits:
+            result.append(finding)
+            if finding.kind == "generated-value-semantics":
+                non_sealing.add(finding.finding_id)
+            continue
+        blocked = _make_finding(
+            "BLOCKED", finding.kind, finding.path, finding.table, finding.column,
+            finding.database, finding.existing, finding.candidate,
+            finding.reason + " Required metadata for this change is incomplete.",
+            "Refresh the schema snapshot and create a fresh plan.", (),
+        )
+        result.append(blocked)
+        non_sealing.add(blocked.finding_id)
+    return tuple(result), frozenset(non_sealing)
+
+
+def _has_incomplete_metadata_dependency(
+    finding: Finding,
+    incomplete_columns: dict[str, frozenset[str]],
+    primary_key_incomplete: bool,
+) -> bool:
+    column_dependencies: dict[str, frozenset[str]] = {
+        "add-property": frozenset({
+            "jdbc_type", "type_name", "size", "mapped_type", "nullable",
+            "auto_increment",
+        }),
+        "add-generated-value": frozenset({"auto_increment"}),
+        "generated-value-semantics": frozenset({"auto_increment"}),
+        "widen-basic-type": frozenset({
+            "jdbc_type", "type_name", "size", "mapped_type", "nullable",
+        }),
+        "narrow-basic-type": frozenset({
+            "jdbc_type", "type_name", "size", "mapped_type", "nullable",
+        }),
+        "domain-basic-mismatch": frozenset({
+            "jdbc_type", "type_name", "size", "mapped_type", "nullable",
+        }),
+        "kotlin-type-nullability": frozenset({
+            "jdbc_type", "type_name", "size", "mapped_type", "nullable",
+        }),
+        "kotlin-nullability": frozenset({"nullable"}),
+    }
+    primary_key_dependencies = {
+        "add-property", "add-generated-value", "generated-value-semantics",
+        "synchronize-primary-key", "candidate-primary-key-mismatch",
+    }
+    missing = incomplete_columns.get(finding.column or "", frozenset())
+    return bool(missing & column_dependencies.get(finding.kind, frozenset())) or (
+        primary_key_incomplete and finding.kind in primary_key_dependencies
+    )
+
+
+def _managed_codegen_naming(root: Path) -> _CodeGenNaming | None:
+    build_files = [path for path in (root / "build.gradle.kts", root / "build.gradle") if path.is_file()]
+    if len(build_files) != 1 or build_files[0].is_symlink():
+        return None
+    try:
+        source = build_files[0].read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    begin = "// " + _CODEGEN_MARKER + ":begin"
+    end = "// " + _CODEGEN_MARKER + ":end"
+    if source.count(begin) != 1 or source.count(end) != 1:
+        return None
+    start = source.find(begin)
+    finish = source.find(end, start + len(begin))
+    if finish < 0:
+        return None
+    managed = source[start:finish]
+    packages = re.findall(
+        r"packageName\.set\(\s*(['\"])([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\1\s*\)",
+        managed,
+    )
+    languages = re.findall(r"LanguageType\.(JAVA|KOTLIN)\b", managed)
+    if len(packages) != 1 or len(languages) != 1:
+        return None
+    return _CodeGenNaming(packages[0][1], languages[0].lower())
+
+
+def _codegen_property_name(column_name: str) -> str:
+    parts = column_name.split("_")
+    while len(parts) > 1 and not parts[-1]:
+        parts.pop()
+    if not parts:
+        return ""
+    return parts[0].lower() + "".join(
+        part[:1].upper() + part[1:].lower() if part else ""
+        for part in parts[1:]
+    )
+
+
+def _codegen_class_name(table_name: str) -> str:
+    name = _codegen_property_name(table_name)
+    return name[:1].upper() + name[1:] if name else ""
 
 
 def _unsupported_finding(parsed_file: _ParsedFile, table: _Table, generated: bool) -> Finding:
@@ -936,8 +1312,15 @@ def _unsupported_kind(reasons: Sequence[str]) -> str:
     return "unsupported-source"
 
 
-def _fail_closed_file(findings: Sequence[Finding]) -> tuple[Finding, ...]:
-    if not any(finding.status == "BLOCKED" for finding in findings):
+def _fail_closed_file(
+    findings: Sequence[Finding],
+    non_sealing_blockers: frozenset[str] = frozenset(),
+) -> tuple[Finding, ...]:
+    if not any(
+        finding.status == "BLOCKED"
+        and finding.finding_id not in non_sealing_blockers
+        for finding in findings
+    ):
         return tuple(findings)
     sealed: list[Finding] = []
     for finding in findings:
@@ -1116,8 +1499,19 @@ def _database_comment_edit(
         return None
     if _doc_payload(old_text) or not _doc_payload(new_text):
         return None
-    replacement = _to_line_ending(new_text, existing.parsed.entity.line_ending)
-    return Edit("replace", existing.file.path, old_span, replacement), old_text, new_text
+    old_comment_start = old_text.find("/**")
+    old_comment_end = old_text.find("*/", old_comment_start + 3) + 2
+    new_comment_start = new_text.find("/**")
+    new_comment_end = new_text.find("*/", new_comment_start + 3) + 2
+    comment_span = SourceSpan(
+        old_span.start + old_comment_start,
+        old_span.start + old_comment_end,
+    )
+    replacement = _to_line_ending(
+        new_text[new_comment_start:new_comment_end],
+        existing.parsed.entity.line_ending,
+    )
+    return Edit("replace", existing.file.path, comment_span, replacement), old_text, new_text
 
 
 def _database_comment_matches_snapshot(
@@ -1131,8 +1525,6 @@ def _database_comment_matches_snapshot(
 
 def _documentation_matches_snapshot(documentation: str, remarks: object) -> bool:
     candidate_payload = _normalized_doc_payload(documentation)
-    if not candidate_payload:
-        return True
     snapshot_payload = "" if remarks is None else " ".join(str(remarks).split())
     return candidate_payload == snapshot_payload
 
@@ -1284,28 +1676,516 @@ def _has_external_reference(
 ) -> bool:
     getter = "get" + prop.name[:1].upper() + prop.name[1:]
     setter = "set" + prop.name[:1].upper() + prop.name[1:]
+    accessor_names = {getter, setter}
+    if (
+        entity.language == "kotlin"
+        and prop.type_name.rsplit(".", 1)[-1] == "Boolean"
+        and len(prop.name) > 2
+        and prop.name.startswith("is")
+        and prop.name[2].isupper()
+    ):
+        accessor_names.update({prop.name, "set" + prop.name[2:]})
+    member_names = accessor_names | {prop.name}
+    factory_keys = _entity_factory_keys(files, entity)
     for item in files:
         if item.path == target_path:
             continue
-        tokens = lex_java(item.source) if item.language == "java" else lex_kotlin(item.source)
-        significant = [
-            token for token in tokens
-            if token.kind == "IDENT" or token.text in {".", ":"}
-        ]
-        if entity.language == "java" and any(
-            token.text in {getter, setter} for token in significant
+        tokens = _code_tokens(item)
+        if _has_typed_member_reference(
+            item, tokens, entity, member_names, factory_keys
         ):
             return True
-        for index, token in enumerate(significant[:-1]):
-            if token.text == "." and significant[index + 1].text.strip("`") == prop.name:
-                return True
+        if item.language == "kotlin" and _has_kotlin_receiver_scope_reference(
+            item, tokens, entity, member_names, factory_keys
+        ):
+            return True
+    return False
+
+
+def _source_package(item: _SourceFile) -> str:
+    match = re.search(
+        r"(?m)^\s*package\s+"
+        r"([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)",
+        item.source,
+    )
+    return match.group(1) if match is not None else ""
+
+
+def _source_imports(item: _SourceFile) -> frozenset[str]:
+    return frozenset(re.findall(
+        r"(?m)^\s*import\s+"
+        r"([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$*][A-Za-z0-9_$*]*)+)",
+        item.source,
+    ))
+
+
+def _code_tokens(item: _SourceFile) -> tuple[Token, ...]:
+    tokens = lex_java(item.source) if item.language == "java" else lex_kotlin(item.source)
+    ignored = {
+        "WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT", "JAVADOC", "KDOC",
+        "STRING", "CHAR", "TEXT_BLOCK", "TRIPLE_STRING",
+    }
+    return tuple(token for token in tokens if token.kind not in ignored)
+
+
+def _identifier(token: Token) -> str:
+    return token.text.strip("`") if token.kind == "IDENT" else ""
+
+
+def _top_level_type_declarations(item: _SourceFile) -> frozenset[str]:
+    keywords = {"class", "interface", "enum", "record"}
+    if item.language == "kotlin":
+        keywords.add("object")
+    excluded_names = {
+        "class", "interface", "enum", "record", "object", "fun", "val", "var",
+    }
+    package_name = _source_package(item)
+    tokens = _code_tokens(item)
+    depth = 0
+    declarations: set[str] = set()
+    for index, token in enumerate(tokens):
+        if token.text == "}":
+            depth = max(0, depth - 1)
+            continue
+        if depth == 0 and _identifier(token) in keywords and index + 1 < len(tokens):
+            previous = tokens[index - 1].text if index else ""
+            name = _identifier(tokens[index + 1])
+            if previous not in {".", ":"} and name and name not in excluded_names:
+                declarations.add((package_name + "." if package_name else "") + name)
+        if token.text == "{":
+            depth += 1
+    if item.language == "kotlin":
+        for facade_name in re.findall(
+            r"(?m)^\s*@file\s*:\s*(?:kotlin\.jvm\.)?JvmName\s*"
+            r"\(\s*\"([A-Za-z_$][A-Za-z0-9_$]*)\"\s*\)",
+            item.source,
+        ):
+            declarations.add(
+                (package_name + "." if package_name else "") + facade_name
+            )
+    return frozenset(declarations)
+
+
+def _file_resolves_entity(item: _SourceFile, entity: EntityModel) -> bool:
+    fqcn = (entity.package_name + "." if entity.package_name else "") + entity.class_name
+    imports = _source_imports(item)
+    return (
+        _source_package(item) == entity.package_name
+        or fqcn in imports
+        or entity.package_name + ".*" in imports
+        or fqcn in item.source
+    )
+
+
+def _matching_token(
+    tokens: Sequence[Token], start: int, opener: str, closer: str
+) -> int | None:
+    if start >= len(tokens) or tokens[start].text != opener:
+        return None
+    depth = 0
+    for index in range(start, len(tokens)):
+        if tokens[index].text == opener:
+            depth += 1
+        elif tokens[index].text == closer:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _entity_factory_keys(
+    files: Sequence[_SourceFile], entity: EntityModel
+) -> frozenset[tuple[str, str]]:
+    result: set[tuple[str, str]] = set()
+    for item in files:
+        if not _file_resolves_entity(item, entity):
+            continue
+        tokens = _code_tokens(item)
+        package_name = _source_package(item)
+        if item.language == "kotlin":
+            for index, token in enumerate(tokens):
+                if _identifier(token) != "fun":
+                    continue
+                open_index = next((
+                    cursor for cursor in range(index + 1, min(len(tokens), index + 32))
+                    if tokens[cursor].text == "("
+                ), None)
+                if open_index is None or open_index == 0:
+                    continue
+                name = _identifier(tokens[open_index - 1])
+                close_index = _matching_token(tokens, open_index, "(", ")")
+                if not name or close_index is None:
+                    continue
+                tail = tokens[close_index + 1:min(len(tokens), close_index + 12)]
+                returns_entity = any(
+                    tail[cursor].text == ":"
+                    and cursor + 1 < len(tail)
+                    and _identifier(tail[cursor + 1]) == entity.class_name
+                    for cursor in range(len(tail))
+                )
+                if not returns_entity:
+                    returns_entity = any(
+                        tail[cursor].text == "="
+                        and cursor + 2 < len(tail)
+                        and _identifier(tail[cursor + 1]) == entity.class_name
+                        and tail[cursor + 2].text == "("
+                        for cursor in range(len(tail))
+                    )
+                if returns_entity:
+                    result.add((package_name, name))
+        else:
+            for index in range(len(tokens) - 2):
+                if (
+                    _identifier(tokens[index]) == entity.class_name
+                    and _identifier(tokens[index + 1])
+                    and tokens[index + 2].text == "("
+                ):
+                    result.add((package_name, _identifier(tokens[index + 1])))
+    return frozenset(result)
+
+
+def _factory_available(
+    item: _SourceFile,
+    name: str,
+    factory_keys: frozenset[tuple[str, str]],
+) -> bool:
+    if (_source_package(item), name) in factory_keys:
+        return True
+    imports = _source_imports(item)
+    return any(
+        (package_name, name) in factory_keys
+        and (package_name + "." + name in imports or package_name + ".*" in imports)
+        for package_name, factory_name in factory_keys
+        if factory_name == name
+    )
+
+
+def _typed_entity_variables(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    entity: EntityModel,
+    factory_keys: frozenset[tuple[str, str]],
+) -> frozenset[str]:
+    result: set[str] = set()
+    if _file_resolves_entity(item, entity) and item.language == "kotlin":
+        for index in range(1, len(tokens) - 1):
             if (
-                token.text == ":"
-                and index + 2 < len(significant)
-                and significant[index + 1].text == ":"
-                and significant[index + 2].text.strip("`") == prop.name
+                tokens[index].text == ":"
+                and _identifier(tokens[index - 1])
+                and _identifier(tokens[index + 1]) == entity.class_name
+            ):
+                result.add(_identifier(tokens[index - 1]))
+    elif _file_resolves_entity(item, entity):
+        for index in range(len(tokens) - 1):
+            if (
+                _identifier(tokens[index]) == entity.class_name
+                and _identifier(tokens[index + 1])
+            ):
+                result.add(_identifier(tokens[index + 1]))
+    changed = True
+    while changed:
+        changed = False
+        for index, token in enumerate(tokens[:-1]):
+            if token.text != "=":
+                continue
+            target = _assignment_target(tokens, index)
+            if not target or target in result:
+                continue
+            if _entity_expression_after(
+                item, tokens, index + 1, entity, frozenset(result), factory_keys
+            ):
+                result.add(target)
+                changed = True
+    return frozenset(result)
+
+
+def _assignment_target(tokens: Sequence[Token], equal_index: int) -> str:
+    start = max(0, equal_index - 12)
+    for cursor in range(equal_index - 1, start - 1, -1):
+        name = _identifier(tokens[cursor])
+        if name in {"val", "var"}:
+            return next((
+                _identifier(tokens[index])
+                for index in range(cursor + 1, equal_index)
+                if _identifier(tokens[index])
+            ), "")
+        if tokens[cursor].text in {";", "{", "}", "(", ")"}:
+            break
+    return _identifier(tokens[equal_index - 1]) if equal_index else ""
+
+
+def _entity_expression_after(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    start: int,
+    entity: EntityModel,
+    variables: frozenset[str],
+    factory_keys: frozenset[tuple[str, str]],
+) -> bool:
+    while start < len(tokens) and (
+        _identifier(tokens[start]) in {"new", "return"}
+        or tokens[start].text == "("
+    ):
+        start += 1
+    if start >= len(tokens):
+        return False
+    name = _identifier(tokens[start])
+    if name in variables:
+        return True
+    parts: list[str] = []
+    cursor = start
+    while cursor < len(tokens):
+        part = _identifier(tokens[cursor])
+        if not part:
+            break
+        parts.append(part)
+        cursor += 1
+        if cursor >= len(tokens) or tokens[cursor].text != ".":
+            break
+        cursor += 1
+    if not parts or cursor >= len(tokens) or tokens[cursor].text != "(":
+        return False
+    callable_name = parts[-1]
+    if callable_name == entity.class_name:
+        fqcn = (
+            (entity.package_name + "." if entity.package_name else "")
+            + entity.class_name
+        )
+        return (
+            len(parts) == 1 and _file_resolves_entity(item, entity)
+        ) or ".".join(parts) == fqcn
+    return _factory_available(item, callable_name, factory_keys)
+
+
+def _entity_expression_before(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    end: int,
+    entity: EntityModel,
+    variables: frozenset[str],
+    factory_keys: frozenset[tuple[str, str]],
+) -> bool:
+    if end < 0:
+        return False
+    last = tokens[end]
+    name = _identifier(last)
+    if name in variables:
+        return True
+    if name == entity.class_name and _file_resolves_entity(item, entity):
+        return True
+    if last.text != ")":
+        return False
+    depth = 0
+    open_index: int | None = None
+    for cursor in range(end, -1, -1):
+        if tokens[cursor].text == ")":
+            depth += 1
+        elif tokens[cursor].text == "(":
+            depth -= 1
+            if depth == 0:
+                open_index = cursor
+                break
+    if open_index is None or open_index == 0:
+        return False
+    callable_name = _identifier(tokens[open_index - 1])
+    return (
+        callable_name == entity.class_name and _file_resolves_entity(item, entity)
+    ) or _factory_available(item, callable_name, factory_keys)
+
+
+def _has_typed_member_reference(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    entity: EntityModel,
+    member_names: set[str],
+    factory_keys: frozenset[tuple[str, str]],
+) -> bool:
+    variables = _typed_entity_variables(item, tokens, entity, factory_keys)
+    for index, token in enumerate(tokens):
+        member = _identifier(token)
+        if member not in member_names:
+            continue
+        if index >= 2 and tokens[index - 1].text == ".":
+            receiver_end = _receiver_expression_end(tokens, index - 1)
+            if _entity_expression_before(
+                item, tokens, receiver_end, entity, variables, factory_keys
             ):
                 return True
+        if index >= 3 and tokens[index - 1].text == ":" and tokens[index - 2].text == ":":
+            receiver_end = index - 3
+            while receiver_end >= 0 and tokens[receiver_end].text == "!":
+                receiver_end -= 1
+            receiver = _identifier(tokens[receiver_end]) if receiver_end >= 0 else ""
+            if receiver in variables or (
+                receiver == entity.class_name and _file_resolves_entity(item, entity)
+            ):
+                return True
+    return False
+
+
+def _range_has_receiver_member(
+    tokens: Sequence[Token], start: int, end: int, member_names: set[str]
+) -> bool:
+    for index in range(start, end):
+        if _identifier(tokens[index]) not in member_names:
+            continue
+        previous = tokens[index - 1].text if index > start else ""
+        if previous not in {".", ":"}:
+            return True
+        if (
+            previous == "."
+            and index >= start + 2
+            and _identifier(tokens[index - 2]) == "this"
+        ):
+            return True
+        if (
+            previous == "."
+            and index >= start + 4
+            and _identifier(tokens[index - 2])
+            and tokens[index - 3].text == "@"
+            and _identifier(tokens[index - 4]) == "this"
+        ):
+            return True
+    return False
+
+
+def _range_has_variable_member(
+    tokens: Sequence[Token],
+    start: int,
+    end: int,
+    variables: frozenset[str],
+    member_names: set[str],
+) -> bool:
+    for index in range(start, end):
+        if _identifier(tokens[index]) not in member_names:
+            continue
+        if index == 0 or tokens[index - 1].text != ".":
+            continue
+        receiver_end = _receiver_expression_end(tokens, index - 1)
+        if receiver_end >= start and _identifier(tokens[receiver_end]) in variables:
+            return True
+    return False
+
+
+def _lambda_parameter(
+    tokens: Sequence[Token], body_start: int, body_end: int
+) -> tuple[str, int]:
+    for index in range(body_start + 1, min(body_end - 1, body_start + 16)):
+        if tokens[index].text == "-" and tokens[index + 1].text == ">":
+            parameter = next((
+                _identifier(tokens[cursor])
+                for cursor in range(body_start + 1, index)
+                if _identifier(tokens[cursor])
+            ), "")
+            return parameter, index + 2
+    return "it", body_start + 1
+
+
+def _receiver_expression_end(tokens: Sequence[Token], operator_index: int) -> int:
+    end = operator_index - 1
+    while end >= 0 and tokens[end].text in {"?", "!"}:
+        end -= 1
+    return end
+
+
+def _has_kotlin_receiver_scope_reference(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    entity: EntityModel,
+    member_names: set[str],
+    factory_keys: frozenset[tuple[str, str]],
+) -> bool:
+    variables = _typed_entity_variables(item, tokens, entity, factory_keys)
+    for index, token in enumerate(tokens):
+        scope_name = _identifier(token)
+        if (
+            scope_name in {"apply", "run", "let", "also"}
+            and index >= 2
+            and tokens[index - 1].text == "."
+        ):
+            receiver_end = _receiver_expression_end(tokens, index - 1)
+            if _entity_expression_before(
+                item, tokens, receiver_end, entity, variables, factory_keys
+            ):
+                body_start = next((
+                    cursor for cursor in range(
+                        index + 1, min(len(tokens), index + 7)
+                    )
+                    if tokens[cursor].text == "{"
+                ), None)
+                if body_start is not None:
+                    body_end = _matching_token(tokens, body_start, "{", "}")
+                    if body_end is not None:
+                        if scope_name in {"apply", "run"} and _range_has_receiver_member(
+                            tokens, body_start + 1, body_end, member_names
+                        ):
+                            return True
+                        if scope_name in {"let", "also"}:
+                            parameter, lambda_start = _lambda_parameter(
+                                tokens, body_start, body_end
+                            )
+                            if parameter and _range_has_variable_member(
+                                tokens, lambda_start, body_end,
+                                frozenset({parameter}), member_names,
+                            ):
+                                return True
+
+        if _identifier(token) == "with" and index + 1 < len(tokens) and tokens[index + 1].text == "(":
+            close = _matching_token(tokens, index + 1, "(", ")")
+            if close is None or close <= index + 2:
+                continue
+            if not _entity_expression_before(
+                item, tokens, close - 1, entity, variables, factory_keys
+            ):
+                continue
+            body_start = close + 1
+            if body_start >= len(tokens) or tokens[body_start].text != "{":
+                continue
+            body_end = _matching_token(tokens, body_start, "{", "}")
+            if body_end is not None and _range_has_receiver_member(
+                tokens, body_start + 1, body_end, member_names
+            ):
+                return True
+
+        if _identifier(token) != "fun":
+            continue
+        open_index = next((
+            cursor for cursor in range(index + 1, min(len(tokens), index + 32))
+            if tokens[cursor].text == "("
+        ), None)
+        if open_index is None:
+            continue
+        receiver = any(
+            _identifier(tokens[cursor]) == entity.class_name
+            and cursor + 1 < open_index
+            and tokens[cursor + 1].text == "."
+            for cursor in range(index + 1, open_index)
+        )
+        if not receiver or not _file_resolves_entity(item, entity):
+            continue
+        close = _matching_token(tokens, open_index, "(", ")")
+        if close is None:
+            continue
+        body_start = next((
+            cursor for cursor in range(close + 1, len(tokens))
+            if tokens[cursor].text in {"=", "{"}
+        ), None)
+        if body_start is None:
+            continue
+        if tokens[body_start].text == "{":
+            body_end = _matching_token(tokens, body_start, "{", "}")
+            if body_end is None:
+                continue
+        else:
+            line_end = item.source.find("\n", tokens[body_start].span.end)
+            if line_end < 0:
+                line_end = len(item.source)
+            body_end = next((
+                cursor for cursor in range(body_start + 1, len(tokens))
+                if tokens[cursor].span.start >= line_end
+            ), len(tokens))
+        if _range_has_receiver_member(tokens, body_start + 1, body_end, member_names):
+            return True
     return False
 
 
@@ -1663,6 +2543,8 @@ def _validate_manifest(value: object) -> tuple[_Table, ...]:
             raise PlanInputError("invalid table qualifier")
         if not isinstance(identity.table, str) or not identity.table or raw_table["type"] != "TABLE":
             raise PlanInputError("invalid table identity or type")
+        if raw_table["remarks"] is not None and not isinstance(raw_table["remarks"], str):
+            raise PlanInputError("invalid table remarks")
         if pattern.fullmatch(identity.table) is None:
             raise PlanInputError("table is outside the declared scope")
         if database == "postgresql" and identity.schema != schema:
@@ -1724,7 +2606,11 @@ def _validate_columns(value: object) -> tuple[dict[str, object], ...]:
     return tuple(result)
 
 
-def _validate_primary_key(value: object, columns: Sequence[dict[str, object]]) -> tuple[dict[str, object], ...]:
+def _validate_primary_key(
+    value: object, columns: Sequence[dict[str, object]]
+) -> tuple[dict[str, object], ...] | None:
+    if value is None:
+        return None
     if not isinstance(value, list):
         raise PlanInputError("primary_key must be a list")
     names = {item["name"] for item in columns}
@@ -1836,15 +2722,15 @@ def _by_table(files: Sequence[_ParsedFile]) -> tuple[dict[TableIdentity, _Parsed
     return unique, duplicate
 
 
-def _by_class(files: Sequence[_ParsedFile]) -> dict[tuple[str, str, str], tuple[_ParsedFile, ...]]:
-    grouped: dict[tuple[str, str, str], list[_ParsedFile]] = {}
+def _by_class(files: Sequence[_ParsedFile]) -> dict[tuple[str, str], tuple[_ParsedFile, ...]]:
+    grouped: dict[tuple[str, str], list[_ParsedFile]] = {}
     for item in files:
         grouped.setdefault(_class_key(item.parsed.entity), []).append(item)
     return {key: tuple(items) for key, items in grouped.items()}
 
 
-def _class_key(entity: EntityModel) -> tuple[str, str, str]:
-    return entity.language, entity.package_name, entity.class_name
+def _class_key(entity: EntityModel) -> tuple[str, str]:
+    return entity.package_name, entity.class_name
 
 
 def _dedupe_edits(edits: Iterable[Edit]) -> list[Edit]:
