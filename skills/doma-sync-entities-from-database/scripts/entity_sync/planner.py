@@ -347,6 +347,25 @@ def _compare_entity(
     old_by_column = {prop.column: prop for prop in old.properties}
     old_by_name = {prop.name: prop for prop in old.properties}
 
+    documentation_mismatches = tuple(
+        (prop, db_columns[prop.column])
+        for prop in new.properties
+        if prop.column in db_columns
+        and not _database_comment_matches_snapshot(
+            candidate, prop, db_columns[prop.column].get("remarks")
+        )
+    )
+    if documentation_mismatches:
+        return tuple(
+            _database_comment_mismatch_finding(
+                table,
+                path,
+                prop.column,
+                {**database_base, "column": column},
+            )
+            for prop, column in documentation_mismatches
+        )
+
     missing_candidate = sorted(set(db_columns) - set(new_by_column))
     extra_candidate = sorted(set(new_by_column) - set(db_columns))
     if missing_candidate or extra_candidate:
@@ -541,8 +560,8 @@ def _compare_entity(
                     "Choose this special mapping manually.", (),
                 ))
 
+        blocked_use = _has_external_reference(references, existing.file.path, old, old_prop)
         if old_prop.type_name != new_prop.type_name:
-            blocked_use = _has_external_reference(references, existing.file.path, old, old_prop)
             domain = any(
                 reason == "domain-typed property: " + old_prop.name
                 for reason in old.unsupported_reasons
@@ -571,26 +590,23 @@ def _compare_entity(
             ))
 
         if old.language == "kotlin" and old_prop.nullable != new_prop.nullable:
-            edits = _kotlin_property_declaration_edits(existing, candidate, old_prop, new_prop)
+            status = "BLOCKED" if blocked_use else "REVIEW_REQUIRED"
+            edits = () if blocked_use else _kotlin_property_declaration_edits(
+                existing, candidate, old_prop, new_prop
+            )
             findings.append(_make_finding(
-                "REVIEW_REQUIRED", "kotlin-nullability", path, table.identity, new_prop.column,
+                status, "kotlin-nullability", path, table.identity, new_prop.column,
                 {**database_base, "column": column},
                 _property_excerpt(old_source, old_prop),
                 _property_excerpt(new_source, new_prop),
+                "Kotlin nullability changes a property retained by handwritten source."
+                if blocked_use else
                 "Kotlin nullability changes the application type even when database metadata is exact.",
+                "Migrate the retained property reference before replanning."
+                if blocked_use else
                 "Review callers, then approve this exact generated property declaration.", edits,
             ))
 
-        if not _database_comment_matches_snapshot(candidate, new_prop, column.get("remarks")):
-            findings.append(_make_finding(
-                "BLOCKED", "database-comment-mismatch", path, table.identity, new_prop.column,
-                {**database_base, "column": column},
-                _doc_prefix(old_source, old_prop)[1] or None,
-                _doc_prefix(new_source, new_prop)[1] or None,
-                "The generated property documentation does not match the authoritative database remarks.",
-                "Regenerate the candidate from this exact snapshot before applying documentation.", (),
-            ))
-            continue
         doc_edit = _database_comment_edit(existing, candidate, old_prop, new_prop)
         if doc_edit is not None:
             findings.append(_make_finding(
@@ -611,6 +627,27 @@ def _new_entity_finding(
     source_root_names: Sequence[str],
     existing_files: Sequence[_SourceFile],
 ) -> Finding:
+    table_documentation = _entity_documentation(candidate)
+    if not _documentation_matches_snapshot(table_documentation, table.raw.get("remarks")):
+        return _database_comment_mismatch_finding(
+            table,
+            candidate.file.path,
+            None,
+            {"table": table.raw, "generated_path": candidate.file.path},
+        )
+    db_columns = {str(column["name"]): column for column in table.columns}
+    for prop in candidate.parsed.entity.properties:
+        column = db_columns.get(prop.column)
+        if column is not None and not _database_comment_matches_snapshot(
+            candidate, prop, column.get("remarks")
+        ):
+            return _database_comment_mismatch_finding(
+                table,
+                candidate.file.path,
+                prop.column,
+                {"table": table.raw, "column": column, "generated_path": candidate.file.path},
+            )
+
     suffix = candidate.file.absolute.suffix
     eligible = [source_root for source_root in source_roots if any(
         item.absolute.suffix == suffix and item.root == _relative(root, source_root)
@@ -902,11 +939,54 @@ def _database_comment_matches_snapshot(
     remarks: object,
 ) -> bool:
     candidate_doc = _doc_prefix(candidate.parsed.source, prop)[1]
-    candidate_payload = _normalized_doc_payload(candidate_doc)
+    return _documentation_matches_snapshot(candidate_doc, remarks)
+
+
+def _documentation_matches_snapshot(documentation: str, remarks: object) -> bool:
+    candidate_payload = _normalized_doc_payload(documentation)
     if not candidate_payload:
         return True
     snapshot_payload = "" if remarks is None else " ".join(str(remarks).split())
     return candidate_payload == snapshot_payload
+
+
+def _database_comment_mismatch_finding(
+    table: _Table,
+    path: str,
+    column: str | None,
+    database: dict[str, object],
+) -> Finding:
+    scope = "entity" if column is None else "property"
+    return _make_finding(
+        "BLOCKED",
+        "database-comment-mismatch",
+        path,
+        table.identity,
+        column,
+        database,
+        None,
+        None,
+        "The generated " + scope
+        + " documentation does not match the authoritative database remarks.",
+        "Regenerate the candidate from this exact snapshot before applying documentation.",
+        (),
+    )
+
+
+def _entity_documentation(candidate: _ParsedFile) -> str:
+    source = candidate.parsed.source
+    lexer = lex_java if candidate.file.language == "java" else lex_kotlin
+    document_kind = "JAVADOC" if candidate.file.language == "java" else "KDOC"
+    documents = [
+        token
+        for token in lexer(source)
+        if token.kind == document_kind
+        and token.span.end <= candidate.parsed.entity.class_body.start
+    ]
+    if not documents:
+        return ""
+    document = documents[-1]
+    return source[document.span.start:document.span.end]
 
 
 def _doc_prefix(source: str, prop: PropertyModel) -> tuple[SourceSpan | None, str]:
@@ -1021,11 +1101,21 @@ def _has_external_reference(
         if item.path == target_path:
             continue
         tokens = lex_java(item.source) if item.language == "java" else lex_kotlin(item.source)
-        significant = [token for token in tokens if token.kind == "IDENT" or token.text == "."]
+        significant = [
+            token for token in tokens
+            if token.kind == "IDENT" or token.text in {".", ":"}
+        ]
         if item.language == "java" and any(token.text in {getter, setter} for token in significant):
             return True
         for index, token in enumerate(significant[:-1]):
             if token.text == "." and significant[index + 1].text.strip("`") == prop.name:
+                return True
+            if (
+                token.text == ":"
+                and index + 2 < len(significant)
+                and significant[index + 1].text == ":"
+                and significant[index + 2].text.strip("`") == prop.name
+            ):
                 return True
     return False
 

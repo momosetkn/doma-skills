@@ -19,6 +19,7 @@ from .planner import (
     MergePlan,
     PlanInputError,
     _expected_finding_id,
+    build_plan,
     contains_sensitive,
     load_plan,
     result_state,
@@ -61,6 +62,8 @@ def apply_plan(
     root = _project_root(project_root)
     merge_plan = load_plan(plan) if isinstance(plan, (str, Path)) else plan
     _validate_plan_object(merge_plan)
+    _verify_hashes(root, merge_plan)
+    _verify_canonical_plan(root, merge_plan)
     approved = frozenset(approvals)
     review_by_id = {
         finding.finding_id: finding
@@ -71,7 +74,6 @@ def apply_plan(
     if unknown:
         raise PlanInputError("approval ID is unknown or not an executable review proposal")
 
-    _verify_hashes(root, merge_plan)
     _verify_git(root)
 
     selected = tuple(
@@ -171,6 +173,48 @@ def _validate_hash_pairs(pairs: Sequence[tuple[str, str]], name: str) -> None:
         _normalized_plan_path(path)
         if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
             raise PlanInputError("invalid " + name + " SHA-256")
+
+
+def _verify_canonical_plan(root: Path, plan: MergePlan) -> None:
+    generated_root = _strict_subdirectory(
+        root, "build/doma-codegen/generated", "generated root"
+    )
+    generated_languages = _source_languages(generated_root)
+    source_roots: list[Path] = []
+    for language in ("java", "kotlin"):
+        source_root = root / "src/main" / language
+        if not source_root.is_dir() or source_root.is_symlink():
+            continue
+        existing_languages = _source_languages(source_root)
+        if language in generated_languages or language in existing_languages:
+            source_roots.append(source_root)
+    if not source_roots:
+        raise UnsafeProjectError("no supported canonical source root was discovered")
+    expected = build_plan(
+        root,
+        root / SNAPSHOT_PATH,
+        generated_root,
+        tuple(source_roots),
+        "auto",
+    )
+    if plan != expected:
+        raise PlanInputError("merge plan does not match the current canonical proposal")
+
+
+def _source_languages(root: Path) -> set[str]:
+    languages: set[str] = set()
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in tuple(directories) + tuple(files):
+            if (current_path / name).is_symlink():
+                raise UnsafeProjectError("canonical source layout contains a symbolic link")
+        for name in files:
+            suffix = Path(name).suffix
+            if suffix == ".java":
+                languages.add("java")
+            elif suffix == ".kt":
+                languages.add("kotlin")
+    return languages
 
 
 def _verify_hashes(root: Path, plan: MergePlan) -> None:

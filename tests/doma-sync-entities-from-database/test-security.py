@@ -22,7 +22,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from entity_sync.applier import UnsafeProjectError, apply_plan
 from entity_sync.model import SourceSpan
-from entity_sync.planner import Edit, PlanInputError, build_plan
+from entity_sync.planner import Edit, PlanInputError, _expected_finding_id, build_plan
 
 
 SAFE_SNAPSHOT = {
@@ -81,6 +81,11 @@ def old_style_finding_id(finding: object, path: str) -> str:
     digest = hashlib.sha256(json.dumps(normalized, separators=(",", ":")).encode()).hexdigest()[:12]
     prefix = re.sub(r"[^a-z0-9]+", "-", (finding.status + "-" + finding.kind).lower()).strip("-")
     return prefix + "-" + digest
+
+
+def with_current_finding_id(finding: object) -> object:
+    finding = replace(finding, finding_id="attacker-recomputed")
+    return replace(finding, finding_id=_expected_finding_id(finding))
 
 
 class SecurityTests(unittest.TestCase):
@@ -215,6 +220,69 @@ class SecurityTests(unittest.TestCase):
             apply_plan(root, plan, approvals=())
         self.assertFalse((root / path).exists())
         self.assertFalse((existing_root / "example/Employee.java").exists())
+
+    def test_current_id_recomputation_cannot_create_arbitrary_content_under_substituted_roots(self) -> None:
+        root, snapshot, generated_root, _ = self.project()
+        existing_root = root / "src/main/java"
+        (existing_root / "example/Employee.java").unlink()
+        plan = build_plan(root, snapshot, generated_root, (existing_root,), "auto")
+        finding = next(item for item in plan.findings if item.kind == "create-entity")
+
+        payload = "arbitrary content that is not a Doma Entity\n"
+        attacker_source = root / "attacker-source"
+        attacker_generated = root / "attacker-generated"
+        attacker_source.mkdir()
+        attacker_generated.mkdir()
+        attacker_candidate = attacker_generated / "payload.txt"
+        attacker_candidate.write_text(payload)
+        path = "attacker-source/payload.txt"
+        tampered = replace(
+            finding,
+            path=path,
+            database={
+                **finding.database,
+                "existing_root": "attacker-source",
+                "generated_root": "attacker-generated",
+                "generated_path": "attacker-generated/payload.txt",
+            },
+            candidate=payload,
+            edits=(Edit("create", path, None, payload),),
+        )
+        tampered = with_current_finding_id(tampered)
+        plan = replace(
+            plan,
+            generated_hashes=((
+                "attacker-generated/payload.txt",
+                hashlib.sha256(payload.encode()).hexdigest(),
+            ),),
+            findings=(tampered,),
+        )
+        self._commit(root)
+
+        with self.assertRaises((PlanInputError, UnsafeProjectError)):
+            apply_plan(root, plan, approvals=())
+        self.assertFalse((root / path).exists())
+
+    def test_current_id_recomputation_cannot_escalate_review_to_safe_without_approval(self) -> None:
+        root, snapshot, generated_root, _ = self.project()
+        existing_root = root / "src/main/java"
+        target = existing_root / "example/Employee.java"
+        target.write_text(JAVA.replace("Integer", "Long"))
+        plan = build_plan(root, snapshot, generated_root, (existing_root,), "auto")
+        review = next(item for item in plan.findings if item.kind == "narrow-basic-type")
+        self.assertEqual("REVIEW_REQUIRED", review.status)
+        tampered = with_current_finding_id(replace(
+            review,
+            status="SAFE",
+            action="Apply without review approval.",
+        ))
+        plan = replace(plan, findings=(tampered,))
+        before = target.read_bytes()
+        self._commit(root)
+
+        with self.assertRaises(PlanInputError):
+            apply_plan(root, plan, approvals=())
+        self.assertEqual(before, target.read_bytes())
 
     def test_exact_proposal_binding_rejects_edit_span_text_and_database_fact_mutation(self) -> None:
         for mutation in ("span", "text", "database"):

@@ -262,10 +262,120 @@ class EntityMergeTests(unittest.TestCase):
         self.assertIn("/** Employee ID */", target.read_text())
 
         project.existing_file(existing)
-        project.generated_file().write_text(candidate.replace("Employee ID", "Stale candidate", 1))
-        mismatch = next(f for f in project.plan().findings if f.kind == "database-comment-mismatch")
+        sentinel = "STALE_MATCHED_CANARY_8V3N"
+        project.generated_file().write_text(candidate.replace("Employee ID", sentinel, 1))
+        mismatch_plan = project.plan()
+        mismatch = next(
+            f for f in mismatch_plan.findings if f.kind == "database-comment-mismatch"
+        )
         self.assertEqual("BLOCKED", mismatch.status)
         self.assertFalse(mismatch.edits)
+        self.assertNotIn(sentinel, plan_json(mismatch_plan) + render_diff(mismatch_plan))
+
+        completed = subprocess.run([
+            sys.executable, str(CLI), "plan", "--project-root", str(project.root),
+            "--schema-snapshot", str(project.snapshot), "--generated-dir", str(project.generated),
+            "--existing-root", str(project.existing), "--language", "auto",
+            "--output-plan", str(project.plan_path), "--output-diff", str(project.diff_path),
+        ], text=True, capture_output=True)
+        self.assertEqual(3, completed.returncode)
+        outputs = completed.stdout + completed.stderr + project.plan_path.read_text() + project.diff_path.read_text()
+        self.assertNotIn(sentinel, outputs)
+
+    def test_mismatching_new_property_comment_is_blocked_without_serializing_the_candidate_text(self) -> None:
+        project = ProjectFixture(self)
+        sentinel = "STALE_PROPERTY_CANARY_7QX9"
+        project.retain_snapshot_columns("employee_id", "display_name")
+        candidate = java_entity(
+            fields=(
+                java_field("id", "employee_id", annotations=("@Id",))
+                + java_field("displayName", "display_name", "String", doc=f"/** {sentinel} */")
+            ),
+            methods=java_accessors("id") + java_accessors("displayName", "String"),
+            imports=("org.seasar.doma.Id",),
+        )
+        project.generated_file().write_text(candidate)
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", annotations=("@Id",)),
+            methods=java_accessors("id"), imports=("org.seasar.doma.Id",),
+        ))
+
+        plan = project.plan()
+        mismatch = next(f for f in plan.findings if f.kind == "database-comment-mismatch")
+        self.assertEqual("BLOCKED", mismatch.status)
+        self.assertFalse(mismatch.edits)
+        self.assertNotIn(sentinel, plan_json(plan) + render_diff(plan))
+        project.commit()
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertEqual("BLOCKED", result.state)
+        self.assertNotIn(sentinel, target.read_text())
+
+        completed = subprocess.run([
+            sys.executable, str(CLI), "plan", "--project-root", str(project.root),
+            "--schema-snapshot", str(project.snapshot), "--generated-dir", str(project.generated),
+            "--existing-root", str(project.existing), "--language", "auto",
+            "--output-plan", str(project.plan_path), "--output-diff", str(project.diff_path),
+        ], text=True, capture_output=True)
+        self.assertEqual(3, completed.returncode)
+        outputs = completed.stdout + completed.stderr + project.plan_path.read_text() + project.diff_path.read_text()
+        self.assertNotIn(sentinel, outputs)
+
+    def test_mismatching_new_entity_comment_is_blocked_without_serializing_the_candidate_text(self) -> None:
+        project = ProjectFixture(self)
+        sentinel = "STALE_ENTITY_CANARY_4M2P"
+        candidate = project.generated_file().read_text().replace(
+            "/** Employees */", f"/** {sentinel} */", 1
+        )
+        project.generated_file().write_text(candidate)
+        plan = project.plan()
+        mismatch = next(f for f in plan.findings if f.kind == "database-comment-mismatch")
+        self.assertEqual("BLOCKED", mismatch.status)
+        self.assertFalse(mismatch.edits)
+        self.assertNotIn(sentinel, plan_json(plan) + render_diff(plan))
+        target = project.existing / "example/entity/Employee.java"
+        project.commit()
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertEqual("BLOCKED", result.state)
+        self.assertFalse(target.exists())
+
+        completed = subprocess.run([
+            sys.executable, str(CLI), "plan", "--project-root", str(project.root),
+            "--schema-snapshot", str(project.snapshot), "--generated-dir", str(project.generated),
+            "--existing-root", str(project.existing), "--language", "auto",
+            "--output-plan", str(project.plan_path), "--output-diff", str(project.diff_path),
+        ], text=True, capture_output=True)
+        self.assertEqual(3, completed.returncode)
+        outputs = completed.stdout + completed.stderr + project.plan_path.read_text() + project.diff_path.read_text()
+        self.assertNotIn(sentinel, outputs)
+
+    def test_mismatching_new_entity_property_comment_is_blocked_without_serializing_the_candidate_text(self) -> None:
+        project = ProjectFixture(self)
+        sentinel = "STALE_NEW_ENTITY_PROPERTY_CANARY_5F1K"
+        candidate = project.generated_file().read_text().replace(
+            "/** Employee ID */", f"/** {sentinel} */", 1
+        )
+        project.generated_file().write_text(candidate)
+
+        plan = project.plan()
+        mismatch = next(f for f in plan.findings if f.kind == "database-comment-mismatch")
+        self.assertEqual("BLOCKED", mismatch.status)
+        self.assertFalse(mismatch.edits)
+        self.assertNotIn(sentinel, plan_json(plan) + render_diff(plan))
+        target = project.existing / "example/entity/Employee.java"
+        project.commit()
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertEqual("BLOCKED", result.state)
+        self.assertFalse(target.exists())
+
+        completed = subprocess.run([
+            sys.executable, str(CLI), "plan", "--project-root", str(project.root),
+            "--schema-snapshot", str(project.snapshot), "--generated-dir", str(project.generated),
+            "--existing-root", str(project.existing), "--language", "auto",
+            "--output-plan", str(project.plan_path), "--output-diff", str(project.diff_path),
+        ], text=True, capture_output=True)
+        self.assertEqual(3, completed.returncode)
+        outputs = completed.stdout + completed.stderr + project.plan_path.read_text() + project.diff_path.read_text()
+        self.assertNotIn(sentinel, outputs)
 
     def test_column_addition_and_unambiguous_correction_are_safe_but_property_rename_is_blocked(self) -> None:
         project = ProjectFixture(self)
@@ -453,6 +563,48 @@ class EntityMergeTests(unittest.TestCase):
             plan = project.plan(language="kotlin")
             self.assertTrue(any(f.status == "BLOCKED" for f in plan.findings))
             self.assertFalse(any(f.edits for f in plan.findings))
+
+    def test_kotlin_callable_references_block_removal_narrowing_and_nullability_edits(self) -> None:
+        cases = (
+            (
+                "remove-property",
+                kotlin_property("id", "employee_id", "Int", "-1"),
+                kotlin_property("id", "employee_id", "Int", "-1")
+                + kotlin_property("legacy", "legacy", "String?", "null"),
+                "Employee::legacy",
+            ),
+            (
+                "narrow-basic-type",
+                kotlin_property("id", "employee_id", "Int", "-1"),
+                kotlin_property("id", "employee_id", "Long", "-1L"),
+                "Employee::id",
+            ),
+            (
+                "kotlin-nullability",
+                kotlin_property("id", "employee_id", "Int", "-1"),
+                kotlin_property("id", "employee_id", "Int?", "null"),
+                "Employee::id",
+            ),
+        )
+        for kind, candidate_properties, existing_properties, reference in cases:
+            with self.subTest(kind=kind):
+                project = ProjectFixture(self)
+                project.existing = project.root / "src/main/kotlin"
+                project.existing.mkdir(parents=True)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["tables"][0]["primary_key"] = []
+                project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+                project.generated_file("kotlin").write_text(
+                    kotlin_entity(properties=candidate_properties)
+                )
+                project.existing_file(kotlin_entity(properties=existing_properties), "kt")
+                use = project.existing / "example/entity/Use.kt"
+                use.write_text(f"package example.entity\nval retained = {reference}\n")
+
+                finding = next(f for f in project.plan(language="kotlin").findings if f.kind == kind)
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
 
     def test_java_record_lombok_and_version_inference_are_blocked(self) -> None:
         project = ProjectFixture(self)
