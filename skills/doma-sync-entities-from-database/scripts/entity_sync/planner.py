@@ -303,6 +303,9 @@ def build_plan(
         if existing.parsed.entity.unsupported_reasons or not existing.parsed.entity.generated_only:
             findings.append(_unsupported_finding(existing, table, generated=False))
             findings.extend(_blocked_changes_in_unsupported_source(table, existing, candidate))
+            findings.extend(_localized_safe_edits_in_unsupported_source(
+                table, existing, candidate, reference_files
+            ))
             continue
         metadata_findings, incomplete_columns, primary_key_incomplete = (
             _existing_metadata_findings(table, existing)
@@ -1291,6 +1294,38 @@ def _blocked_changes_in_unsupported_source(
             "Migrate the handwritten references first, or retain an explicitly transient compatibility member.", (),
         ))
     return tuple(result)
+
+
+def _localized_safe_edits_in_unsupported_source(
+    table: _Table,
+    existing: _ParsedFile,
+    candidate: _ParsedFile,
+    references: Sequence[_SourceFile],
+) -> tuple[Finding, ...]:
+    """Keep additive/ID edits executable when they cannot touch retained semantics."""
+    reasons = existing.parsed.entity.unsupported_reasons
+    preservable_prefixes = ("handwritten method:", "custom annotation:")
+    if not reasons or any(
+        not reason.startswith(preservable_prefixes) for reason in reasons
+    ):
+        return ()
+    metadata_findings, incomplete_columns, primary_key_incomplete = (
+        _existing_metadata_findings(table, existing)
+    )
+    compared, _ = _block_metadata_dependent_edits(
+        _compare_entity(table, existing, candidate, references),
+        incomplete_columns,
+        primary_key_incomplete,
+    )
+    blockers = tuple(finding for finding in compared if finding.status == "BLOCKED")
+    if metadata_findings or blockers:
+        return metadata_findings + blockers
+    allowed = {"add-property", "synchronize-primary-key"}
+    localized = tuple(
+        finding for finding in compared
+        if finding.status == "SAFE" and finding.kind in allowed
+    )
+    return metadata_findings + localized
 
 
 def _unsupported_kind(reasons: Sequence[str]) -> str:

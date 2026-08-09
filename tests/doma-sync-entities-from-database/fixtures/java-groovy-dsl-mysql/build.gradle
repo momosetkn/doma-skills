@@ -1,0 +1,18 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    implementation 'org.seasar.doma:doma-core:3.14.0'
+    annotationProcessor 'org.seasar.doma:doma-processor:3.14.0'
+}

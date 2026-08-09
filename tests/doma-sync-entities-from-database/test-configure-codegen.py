@@ -315,6 +315,38 @@ java { toolchain { languageVersion.set(JavaLanguageVersion.of(11)) } }
             self.assertIn('register("domaSync")', text)
             self.assertIn("domaCodeGenDomaSync", text)
 
+    def test_generated_candidates_render_physical_names_and_database_comments(self) -> None:
+        for build_name, qualifier in (
+            ("build.gradle.kts", "showSchemaName.set(true)"),
+            ("build.gradle", "showSchemaName.set(true)"),
+        ):
+            with self.subTest(build_name=build_name):
+                directory, project = self.make_project(build_name)
+                with directory:
+                    text = self.plan_fragment_text(self.create_plan(project))
+                    self.assertIn(qualifier, text)
+                    self.assertIn("showCatalogName.set(false)", text)
+                    self.assertIn("showTableName.set(true)", text)
+                    self.assertIn("showColumnName.set(true)", text)
+                    self.assertIn("showDbComment.set(true)", text)
+
+        directory, project = self.make_project("build.gradle")
+        with directory:
+            result = run_configurator(
+                project, "plan", "--language", "java", "--database", "mysql",
+                "--entity-package", "example.generated", "--catalog", "fixture_catalog",
+                "--table-pattern", ".*", "--codegen-version", "3.2.2",
+                "--driver-coordinate", "com.mysql:mysql-connector-j:26.7.0",
+                "--metamodel", "false", "--output-plan",
+                "build/doma-codegen/configure-plan.json",
+            )
+            self.assertEqual(2, result.returncode, result.stderr)
+            text = self.plan_fragment_text(
+                project / "build/doma-codegen/configure-plan.json"
+            )
+            self.assertIn("showCatalogName.set(true)", text)
+            self.assertIn("showSchemaName.set(false)", text)
+
     def test_classpath_writer_is_credential_independent(self) -> None:
         directory, project = self.make_project()
         with directory:

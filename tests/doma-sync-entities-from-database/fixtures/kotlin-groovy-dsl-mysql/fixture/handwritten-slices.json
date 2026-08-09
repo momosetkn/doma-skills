@@ -1,0 +1,14 @@
+[
+  {
+    "path": "src/main/kotlin/example/entity/Customer.kt",
+    "start": "// HANDWRITTEN-BEGIN:audited-entity-annotations",
+    "end": "// HANDWRITTEN-END:audited-entity-annotations",
+    "expected": "fixture/expected/audited-entity-annotations.txt"
+  },
+  {
+    "path": "src/main/kotlin/example/entity/Customer.kt",
+    "start": "// HANDWRITTEN-BEGIN:audited-label",
+    "end": "// HANDWRITTEN-END:audited-label",
+    "expected": "fixture/expected/audited-label.txt"
+  }
+]

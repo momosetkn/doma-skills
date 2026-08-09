@@ -1,0 +1,8 @@
+[
+  {
+    "path": "src/main/java/example/entity/Customer.java",
+    "start": "// HANDWRITTEN-BEGIN:customer-key",
+    "end": "// HANDWRITTEN-END:customer-key",
+    "expected": "fixture/expected/customer-key.txt"
+  }
+]

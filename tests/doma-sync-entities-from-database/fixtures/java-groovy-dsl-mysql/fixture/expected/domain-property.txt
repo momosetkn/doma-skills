@@ -1,0 +1,5 @@
+// HANDWRITTEN-BEGIN:domain-property
+    /** Total amount */
+    @Column(name = "amount")
+    Money amount;
+// HANDWRITTEN-END:domain-property

@@ -1,0 +1,4 @@
+// HANDWRITTEN-BEGIN:kotlin-display
+    /** Application-owned display label. */
+    fun displayLabel(): String = "customer-$customerId"
+// HANDWRITTEN-END:kotlin-display

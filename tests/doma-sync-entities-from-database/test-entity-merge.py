@@ -1348,7 +1348,7 @@ class EntityMergeTests(unittest.TestCase):
         plan = project.plan()
         self.assertFalse(any("generated-value" in finding.kind for finding in plan.findings))
 
-    def test_domain_special_mappings_methods_inheritance_interfaces_and_custom_annotations_stop_file_edits(self) -> None:
+    def test_domain_special_mappings_inheritance_and_interfaces_stop_file_edits(self) -> None:
         project = ProjectFixture(self)
         project.generated_file()
         domain = project.existing / "example/Money.java"
@@ -1367,18 +1367,9 @@ class EntityMergeTests(unittest.TestCase):
                 methods=java_accessors("id"), imports=("org.seasar.doma.Id", "org.seasar.doma.TenantId"),
             ),
             java_entity(
-                fields=java_field("id", "employee_id", annotations=("@Id",)),
-                methods=java_accessors("id") + "    public String label() { return id.toString(); }\n",
-                imports=("org.seasar.doma.Id",),
-            ),
-            java_entity(
                 fields=java_field("id", "employee_id", annotations=("@Id",)), methods=java_accessors("id"),
                 class_decl="public class Employee extends BaseEmployee implements Audited",
                 imports=("org.seasar.doma.Id",),
-            ),
-            java_entity(
-                fields=java_field("id", "employee_id", annotations=("@Id", "@SecretMarker")),
-                methods=java_accessors("id"), imports=("org.seasar.doma.Id", "example.SecretMarker"),
             ),
         )
         for source in variants:
@@ -1387,6 +1378,192 @@ class EntityMergeTests(unittest.TestCase):
                 plan = project.plan()
                 self.assertTrue(any(f.status == "BLOCKED" for f in plan.findings))
                 self.assertFalse(any(f.edits for f in plan.findings if f.path.endswith("Employee.java")))
+
+    def test_handwritten_method_preserves_localized_new_property_and_composite_key_edits(self) -> None:
+        project = ProjectFixture(self)
+        snapshot = json.loads(project.snapshot.read_text())
+        table = snapshot["tables"][0]
+        table["primary_key"] = [
+            {"name": "employee_pkey", "column": "employee_id", "sequence": 1},
+            {"name": "employee_pkey", "column": "version", "sequence": 2},
+        ]
+        table["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        candidate = java_entity(
+            fields=(
+                java_field(
+                    "id", "employee_id", annotations=("@Id",),
+                    doc="/** Employee ID */",
+                )
+                + java_field("displayName", "display_name", "String", doc="/** Display name */")
+                + java_field("version", "version", annotations=("@Id",))
+            ),
+            methods=(
+                java_accessors("id")
+                + java_accessors("displayName", "String")
+                + java_accessors("version")
+            ),
+            imports=("org.seasar.doma.Id",),
+        )
+        project.generated_file().write_text(candidate)
+        handwritten = (
+            "    /** Application-owned label. */\n"
+            "    public String label() { return id.toString(); }\n"
+        )
+        target = project.existing_file(java_entity(
+            fields=(
+                java_field(
+                    "id", "employee_id", annotations=("@Id",),
+                    doc="/** Employee ID */",
+                )
+                + java_field("version", "version")
+            ),
+            methods=java_accessors("id") + java_accessors("version") + handwritten,
+            imports=("org.seasar.doma.Id",),
+        ))
+
+        plan = project.plan()
+        self.assertTrue(any(
+            finding.status == "BLOCKED" and finding.kind == "unsupported-source"
+            for finding in plan.findings
+        ))
+        for kind in ("add-property", "synchronize-primary-key"):
+            finding = next(item for item in plan.findings if item.kind == kind)
+            self.assertEqual("SAFE", finding.status)
+            self.assertTrue(finding.edits)
+        project.commit()
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertEqual("BLOCKED", result.state)
+        merged = target.read_text()
+        self.assertIn('@Column(name = "display_name")', merged)
+        self.assertEqual(2, merged.count("@Id"))
+        self.assertIn(handwritten, merged)
+
+    def test_localized_unsupported_edits_stay_blocked_for_data_classes_and_incomplete_metadata(self) -> None:
+        project = ProjectFixture(self)
+        project.existing = project.root / "src/main/kotlin"
+        project.existing.mkdir(parents=True)
+        project.retain_snapshot_columns("employee_id", "display_name")
+        project.generated_file("kotlin").write_text(kotlin_entity(properties=(
+            kotlin_property("employeeId", "employee_id", "Int", "-1", "/** Employee ID */")
+            + kotlin_property("displayName", "display_name", "String?", "null", "/** Display name */")
+        )).replace(
+            '@Column(name = "employee_id")',
+            '@org.seasar.doma.Id\n    @Column(name = "employee_id")',
+            1,
+        ))
+        project.existing_file(kotlin_entity(
+            properties="",
+            class_decl=(
+                "data class Employee(\n"
+                "    @org.seasar.doma.Id @Column(name = \"employee_id\")\n"
+                "    var employeeId: Int,\n"
+                ")"
+            ),
+        ), "kt")
+        data_class_plan = project.plan(language="kotlin")
+        self.assertTrue(any(
+            finding.kind == "kotlin-primary-constructor" and finding.status == "BLOCKED"
+            for finding in data_class_plan.findings
+        ))
+        self.assertFalse(any(
+            finding.kind == "add-property" and finding.edits
+            for finding in data_class_plan.findings
+        ))
+
+        project = ProjectFixture(self)
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["columns"][1]["nullable"] = None
+        snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=(
+                java_field("id", "employee_id", annotations=("@Id",), doc="/** Employee ID */")
+                + java_field("displayName", "display_name", "String", doc="/** Display name */")
+                + java_field("version", "version")
+            ),
+            methods=(
+                java_accessors("id") + java_accessors("displayName", "String")
+                + java_accessors("version")
+            ),
+            imports=("org.seasar.doma.Id",),
+        ))
+        project.existing_file(java_entity(
+            fields=(
+                java_field("id", "employee_id", annotations=("@Id",), doc="/** Employee ID */")
+                + java_field("version", "version")
+            ),
+            methods=(
+                java_accessors("id") + java_accessors("version")
+                + "    public String label() { return id.toString(); }\n"
+            ),
+            imports=("org.seasar.doma.Id",),
+        ))
+        incomplete_plan = project.plan(language="java")
+        self.assertTrue(any(
+            finding.kind == "schema-metadata-incomplete"
+            and finding.column == "display_name"
+            for finding in incomplete_plan.findings
+        ))
+        self.assertFalse(any(
+            finding.kind == "add-property" and finding.edits
+            for finding in incomplete_plan.findings
+        ))
+
+    def test_localized_unsupported_edits_fail_closed_on_candidate_inconsistency(self) -> None:
+        project = ProjectFixture(self)
+        candidate_path = project.generated_file()
+        generated = candidate_path.read_text()
+        candidate_path.write_text(generated.replace(
+            "    /** Returns the employeeId. */",
+            java_field("legacy", "legacy") + java_accessors("legacy")
+            + "    /** Returns the employeeId. */",
+            1,
+        ))
+        existing = generated.replace(
+            java_field("displayName", "display_name", "String", doc="/** Display name */"), ""
+        ).replace(java_accessors("displayName", "String"), "")
+        project.existing_file(existing.rsplit("}\n", 1)[0]
+                              + "    public String label() { return employeeId.toString(); }\n}\n")
+
+        plan = project.plan()
+        blocker = next(
+            finding for finding in plan.findings
+            if finding.kind == "generated-column-mismatch"
+        )
+        self.assertEqual("BLOCKED", blocker.status)
+        self.assertFalse(blocker.edits)
+        self.assertFalse(any(
+            finding.status == "SAFE" and finding.edits
+            for finding in plan.findings
+        ))
+
+    def test_localized_unsupported_edits_fail_closed_on_unrelated_incomplete_metadata(self) -> None:
+        project = ProjectFixture(self)
+        snapshot = json.loads(project.snapshot.read_text())
+        version = next(
+            column for column in snapshot["tables"][0]["columns"]
+            if column["name"] == "version"
+        )
+        version["nullable"] = None
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        generated = project.generated_file().read_text()
+        existing = generated.replace(
+            java_field("displayName", "display_name", "String", doc="/** Display name */"), ""
+        ).replace(java_accessors("displayName", "String"), "")
+        project.existing_file(existing.rsplit("}\n", 1)[0]
+                              + "    public String label() { return employeeId.toString(); }\n}\n")
+
+        plan = project.plan()
+        blocker = next(
+            finding for finding in plan.findings
+            if finding.kind == "schema-metadata-incomplete" and finding.column == "version"
+        )
+        self.assertEqual("BLOCKED", blocker.status)
+        self.assertFalse(any(
+            finding.status == "SAFE" and finding.edits
+            for finding in plan.findings
+        ))
 
     def test_kotlin_nullability_is_review_and_primary_constructor_or_data_class_is_blocked(self) -> None:
         project = ProjectFixture(self)

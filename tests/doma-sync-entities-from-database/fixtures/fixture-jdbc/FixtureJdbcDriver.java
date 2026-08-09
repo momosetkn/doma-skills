@@ -127,7 +127,8 @@ public final class FixtureJdbcDriver implements Driver {
   }
 
   private static List<Map<String, Object>> tables(String url) {
-    String catalog = isMysql(url) ? "fixture_catalog" : null;
+    String catalog = isMysql(url) ? "fixture_catalog"
+        : isPostgresql(url) ? "fixture_database" : null;
     String schema = isPostgresql(url) ? "public" : null;
     return Arrays.asList(row("TABLE_CAT", catalog, "TABLE_SCHEM", schema, "TABLE_NAME", "tenant_zebra", "TABLE_TYPE", "TABLE", "REMARKS", "zebra"),
         row("TABLE_CAT", catalog, "TABLE_SCHEM", schema, "TABLE_NAME", "outside_scope", "TABLE_TYPE", "TABLE", "REMARKS", "outside"),

@@ -87,6 +87,7 @@ class SchemaSnapshotTest(unittest.TestCase):
         }, manifest)
         tables = manifest["tables"]
         self.assertEqual(["tenant_alpha", "tenant_zebra"], [table["name"] for table in tables])
+        self.assertEqual([None, None], [table["catalog"] for table in tables])
         alpha = tables[0]
         self.assertEqual(["catalog", "schema", "name", "type", "remarks", "primary_key", "columns"], list(alpha))
         self.assertEqual(["id", "note", "created"], [column["name"] for column in alpha["columns"]])

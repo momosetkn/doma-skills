@@ -55,7 +55,8 @@ final class SchemaSnapshot {
         String name = results.getString("TABLE_NAME");
         if (name != null && inputs.tableNamePattern().matcher(name).matches()) {
           tables.add(new Table(
-              results.getString("TABLE_CAT"), results.getString("TABLE_SCHEM"), name,
+              inputs.kind().equals("postgresql") ? null : results.getString("TABLE_CAT"),
+              results.getString("TABLE_SCHEM"), name,
               results.getString("TABLE_TYPE"), results.getString("REMARKS"),
               readPrimaryKeys(metadata, inputs.catalog(), inputs.schema(), name),
               readColumns(metadata, inputs.catalog(), inputs.schema(), name)));
