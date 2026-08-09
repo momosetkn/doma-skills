@@ -284,6 +284,27 @@ class SecurityTests(unittest.TestCase):
             apply_plan(root, plan, approvals=())
         self.assertEqual(before, target.read_bytes())
 
+    def test_current_id_cannot_select_project_root_as_the_canonical_existing_root(self) -> None:
+        root, snapshot, generated_root, _ = self.project()
+        existing_root = root / "src/main/java"
+        target = existing_root / "example/Employee.java"
+        target.write_text(JAVA.replace("    @Id\n", "", 1))
+        plan = build_plan(root, snapshot, generated_root, (existing_root,), "java")
+        finding = next(
+            item for item in plan.findings if item.kind == "synchronize-primary-key"
+        )
+        tampered = with_current_finding_id(replace(
+            finding,
+            database={**finding.database, "existing_root": "."},
+        ))
+        plan = replace(plan, findings=(tampered,))
+        before = target.read_bytes()
+        self._commit(root)
+
+        with self.assertRaises(UnsafeProjectError):
+            apply_plan(root, plan, approvals=())
+        self.assertEqual(before, target.read_bytes())
+
     def test_exact_proposal_binding_rejects_edit_span_text_and_database_fact_mutation(self) -> None:
         for mutation in ("span", "text", "database"):
             with self.subTest(mutation=mutation):

@@ -116,6 +116,39 @@ def kotlin_property(name: str, column: str, type_name: str, default: str) -> str
     )
 
 
+def java_new_entity_candidate() -> str:
+    return java_entity(
+        fields=(
+            java_field(
+                "id", "employee_id", annotations=(
+                    "@Id", "@GeneratedValue(strategy = GenerationType.IDENTITY)"
+                ), doc="/** Employee ID */"
+            )
+            + java_field(
+                "displayName", "display_name", "String", doc="/** Display name */"
+            )
+            + java_field("version", "version")
+        ),
+        methods=(
+            java_accessors("id")
+            + java_accessors("displayName", "String")
+            + java_accessors("version")
+        ),
+        imports=(
+            "org.seasar.doma.GeneratedValue",
+            "org.seasar.doma.GenerationType",
+            "org.seasar.doma.Id",
+        ),
+    )
+
+
+def without_version_semantics(source: str, language: str) -> str:
+    terminator = ";" if language == "java" else ""
+    return source.replace(
+        f"import org.seasar.doma.Version{terminator}\n", ""
+    ).replace("    @Version\n", "")
+
+
 class ProjectFixture:
     def __init__(self, owner: unittest.TestCase) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="entity-merge-test-")
@@ -191,6 +224,7 @@ class EntityMergeTests(unittest.TestCase):
             with self.subTest(language=language):
                 project = ProjectFixture(self)
                 generated = project.generated_file(language)
+                generated.write_text(without_version_semantics(generated.read_text(), language))
                 project.existing = project.root / f"src/main/{language}"
                 project.existing.mkdir(parents=True, exist_ok=True)
                 plan = project.plan(language=language)
@@ -203,6 +237,163 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("SUCCESS", result.state)
                 self.assertEqual(generated.read_bytes(), target.read_bytes())
                 self.assertEqual((), project.plan(language=language).findings)
+
+    def test_new_entity_create_requires_exact_physical_snapshot_and_no_special_semantics(self) -> None:
+        valid = java_new_entity_candidate()
+        missing_columns = java_entity(
+            fields=java_field(
+                "id", "employee_id", annotations=(
+                    "@Id", "@GeneratedValue(strategy = GenerationType.IDENTITY)"
+                ), doc="/** Employee ID */"
+            ),
+            methods=java_accessors("id"),
+            imports=(
+                "org.seasar.doma.GeneratedValue",
+                "org.seasar.doma.GenerationType",
+                "org.seasar.doma.Id",
+            ),
+        )
+        extra_column = valid.replace(
+            "    /** Returns the id. */",
+            java_field("legacy", "legacy")
+            + java_accessors("legacy")
+            + "    /** Returns the id. */",
+            1,
+        )
+        wrong_type = valid.replace("String displayName;", "Integer displayName;").replace(
+            "String getDisplayName()", "Integer getDisplayName()"
+        ).replace("setDisplayName(String displayName)", "setDisplayName(Integer displayName)")
+        missing_id = valid.replace("    @Id\n", "", 1)
+        wrong_id = missing_id.replace(
+            '    @Column(name = "display_name")\n',
+            '    @Id\n    @Column(name = "display_name")\n',
+            1,
+        )
+        missing_generated_value = valid.replace(
+            "    @GeneratedValue(strategy = GenerationType.IDENTITY)\n", "", 1
+        )
+        wrong_generated_value = valid.replace(
+            "GenerationType.IDENTITY", "GenerationType.SEQUENCE", 1
+        )
+        stock_version = (
+            FIXTURES / "generated-candidates/java/example/entity/Employee.java"
+        ).read_text()
+        tenant_id = valid.replace(
+            "import org.seasar.doma.Table;\n",
+            "import org.seasar.doma.Table;\nimport org.seasar.doma.TenantId;\n",
+            1,
+        ).replace(
+            '    @Column(name = "version")\n',
+            '    @TenantId\n    @Column(name = "version")\n',
+            1,
+        )
+        handwritten_method = (
+            valid.rsplit("}\n", 1)[0]
+            + "    public String label() { return displayName; }\n}\n"
+        )
+
+        cases = (
+            ("missing-two-columns", missing_columns, "generated-column-mismatch"),
+            ("extra-column", extra_column, "generated-column-mismatch"),
+            ("wrong-type", wrong_type, "generated-type-mismatch"),
+            ("missing-id", missing_id, "candidate-primary-key-mismatch"),
+            ("wrong-id", wrong_id, "candidate-primary-key-mismatch"),
+            ("missing-generated-value", missing_generated_value, "generated-value-semantics"),
+            ("wrong-generated-value", wrong_generated_value, "generated-value-semantics"),
+            ("version", stock_version, "version-semantics"),
+            ("tenant-id", tenant_id, "special-mapping"),
+            ("handwritten-method", handwritten_method, "unsupported-source"),
+        )
+        for label, candidate, expected_kind in cases:
+            with self.subTest(case=label):
+                project = ProjectFixture(self)
+                project.generated_file().write_text(candidate)
+                plan = project.plan()
+                finding = next(
+                    item for item in plan.findings if item.kind == expected_kind
+                )
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
+                self.assertFalse(any(
+                    item.kind == "create-entity" and item.status == "SAFE"
+                    for item in plan.findings
+                ))
+
+        project = ProjectFixture(self)
+        project.generated_file().write_text(valid)
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["primary_key"] = [
+            {"name": "employee_pkey", "column": "employee_id", "sequence": 1},
+            {"name": "employee_pkey", "column": "version", "sequence": 2},
+        ]
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        composite = next(
+            item for item in project.plan().findings
+            if item.kind == "candidate-primary-key-mismatch"
+        )
+        self.assertEqual("BLOCKED", composite.status)
+        self.assertFalse(composite.edits)
+
+    def test_new_kotlin_entity_nullability_must_match_snapshot(self) -> None:
+        project = ProjectFixture(self)
+        project.existing = project.root / "src/main/kotlin"
+        project.existing.mkdir(parents=True)
+        generated = project.generated_file("kotlin")
+        candidate = without_version_semantics(generated.read_text(), "kotlin").replace(
+            "var id: Int = -1", "var id: Int? = null", 1
+        )
+        generated.write_text(candidate)
+
+        mismatch = next(
+            item for item in project.plan(language="kotlin").findings
+            if item.kind == "generated-nullability-mismatch"
+        )
+        self.assertEqual("BLOCKED", mismatch.status)
+        self.assertFalse(mismatch.edits)
+
+    def test_new_mysql_bit_entity_uses_the_codegen_length_mapping(self) -> None:
+        for size, type_name in ((1, "Boolean"), (8, "Byte")):
+            with self.subTest(size=size, type_name=type_name):
+                project = ProjectFixture(self)
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["database"] = "mysql"
+                snapshot["scope"] = {
+                    "catalog": "application", "schema": None,
+                    "table_pattern": "employee",
+                }
+                table = snapshot["tables"][0]
+                table["catalog"] = "application"
+                table["schema"] = None
+                table["primary_key"] = []
+                column = table["columns"][0]
+                column.update({
+                    "jdbc_type": -7,
+                    "type_name": "bit",
+                    "size": size,
+                    "auto_increment": False,
+                })
+                table["columns"] = [column]
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n"
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", type_name, doc="/** Employee ID */"
+                    ),
+                    methods=java_accessors("id", type_name),
+                    class_annotations=(
+                        "@Entity(metamodel = @Metamodel)\n"
+                        '@Table(catalog = "application", name = "employee")'
+                    ),
+                ))
+
+                plan = project.plan(language="java")
+                create = next(
+                    finding for finding in plan.findings
+                    if finding.kind == "create-entity"
+                )
+                self.assertEqual("SAFE", create.status)
+                self.assertTrue(create.edits)
 
     def test_safe_insert_column_annotation_comment_type_widening_and_new_nullability(self) -> None:
         project = ProjectFixture(self)
@@ -564,6 +755,65 @@ class EntityMergeTests(unittest.TestCase):
             self.assertTrue(any(f.status == "BLOCKED" for f in plan.findings))
             self.assertFalse(any(f.edits for f in plan.findings))
 
+    def test_combined_kotlin_type_and_nullability_change_requires_one_exact_atomic_approval(self) -> None:
+        cases = (
+            ("Int?", "null", "Long", "-1L"),
+            ("Long?", "null", "Int", "-1"),
+        )
+        for old_type, old_default, new_type, new_default in cases:
+            with self.subTest(old_type=old_type, new_type=new_type):
+                project = ProjectFixture(self)
+                project.existing = project.root / "src/main/kotlin"
+                project.existing.mkdir(parents=True)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["tables"][0]["primary_key"] = []
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+                project.generated_file("kotlin").write_text(kotlin_entity(
+                    properties=kotlin_property("id", "employee_id", new_type, new_default)
+                ))
+                target = project.existing_file(kotlin_entity(
+                    properties=kotlin_property("id", "employee_id", old_type, old_default)
+                ), "kt")
+
+                plan = project.plan(language="kotlin")
+                combined = [
+                    finding for finding in plan.findings
+                    if finding.kind == "kotlin-type-nullability"
+                ]
+                self.assertEqual(1, len(combined))
+                self.assertEqual("REVIEW_REQUIRED", combined[0].status)
+                self.assertTrue(combined[0].edits)
+                self.assertFalse(any(
+                    finding.kind in {
+                        "widen-basic-type", "narrow-basic-type", "kotlin-nullability"
+                    }
+                    for finding in plan.findings
+                ))
+
+                project.commit()
+                before = target.read_bytes()
+                with self.assertRaises(PlanInputError):
+                    apply_plan(
+                        project.root,
+                        plan,
+                        approvals=("review-required-kotlin-nullability-old-dimension",),
+                    )
+                self.assertEqual(before, target.read_bytes())
+
+                pending = apply_plan(project.root, plan, approvals=())
+                self.assertEqual("PENDING_REVIEW", pending.state)
+                self.assertEqual(before, target.read_bytes())
+
+                applied = apply_plan(
+                    project.root, plan, approvals=(combined[0].finding_id,)
+                )
+                self.assertEqual("SUCCESS", applied.state)
+                merged = target.read_text()
+                self.assertIn(f"var id: {new_type} = {new_default}", merged)
+                self.assertNotIn(f"var id: {new_type} = {old_default}", merged)
+
     def test_kotlin_callable_references_block_removal_narrowing_and_nullability_edits(self) -> None:
         cases = (
             (
@@ -603,6 +853,82 @@ class EntityMergeTests(unittest.TestCase):
                 use.write_text(f"package example.entity\nval retained = {reference}\n")
 
                 finding = next(f for f in project.plan(language="kotlin").findings if f.kind == kind)
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
+
+    def test_kotlin_calls_and_callable_references_block_java_accessor_changes(self) -> None:
+        removal_probes = (
+            "fun use(e: Employee) = e.getLegacy()",
+            "fun use(e: Employee) { e.setLegacy(1) }",
+            "val use = Employee::getLegacy",
+            "val use = Employee::setLegacy",
+        )
+        for probe in removal_probes:
+            with self.subTest(change="removal", probe=probe):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+                project.generated_file().write_text(java_entity(
+                    fields=java_field("id", "employee_id", annotations=("@Id",)),
+                    methods=java_accessors("id"), imports=("org.seasar.doma.Id",),
+                ))
+                project.existing_file(java_entity(
+                    fields=(
+                        java_field("id", "employee_id", annotations=("@Id",))
+                        + java_field("legacy", "legacy")
+                    ),
+                    methods=java_accessors("id") + java_accessors("legacy"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                kotlin_root = project.root / "src/main/kotlin"
+                use = kotlin_root / "example/entity/Use.kt"
+                use.parent.mkdir(parents=True)
+                use.write_text("package example.entity\n" + probe + "\n")
+
+                plan = build_plan(
+                    project.root, project.snapshot, project.generated,
+                    (project.existing, kotlin_root), "auto",
+                )
+                finding = next(item for item in plan.findings if item.kind == "remove-property")
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
+
+        signature_probes = (
+            "fun use(e: Employee) = e.getId()",
+            "fun use(e: Employee) { e.setId(1) }",
+            "val use = Employee::getId",
+            "val use = Employee::setId",
+        )
+        for probe in signature_probes:
+            with self.subTest(change="signature", probe=probe):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+                project.generated_file().write_text(java_entity(
+                    fields=java_field("id", "employee_id", "Long", annotations=("@Id",)),
+                    methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+                ))
+                project.existing_file(java_entity(
+                    fields=java_field("id", "employee_id", annotations=("@Id",)),
+                    methods=java_accessors("id"), imports=("org.seasar.doma.Id",),
+                ))
+                kotlin_root = project.root / "src/main/kotlin"
+                use = kotlin_root / "example/entity/Use.kt"
+                use.parent.mkdir(parents=True)
+                use.write_text("package example.entity\n" + probe + "\n")
+
+                plan = build_plan(
+                    project.root, project.snapshot, project.generated,
+                    (project.existing, kotlin_root), "auto",
+                )
+                finding = next(
+                    item for item in plan.findings
+                    if item.kind in {"widen-basic-type", "narrow-basic-type"}
+                )
                 self.assertEqual("BLOCKED", finding.status)
                 self.assertFalse(finding.edits)
 
@@ -816,6 +1142,56 @@ class EntityMergeTests(unittest.TestCase):
         subprocess.run(["git", "checkout", "--", str(target.relative_to(project.root))], cwd=project.root, check=True)
         with self.assertRaises(PlanInputError):
             apply_plan(project.root, plan, approvals=("unknown-proposal",))
+
+    def test_java_only_plan_applies_in_mixed_project_with_its_exact_explicit_roots(self) -> None:
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", annotations=("@Id",)),
+            methods=java_accessors("id"), imports=("org.seasar.doma.Id",),
+        ))
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id"), methods=java_accessors("id")
+        ))
+        kotlin_root = project.root / "src/main/kotlin"
+        unrelated = kotlin_root / "example/Unrelated.kt"
+        unrelated.parent.mkdir(parents=True)
+        unrelated.write_text("package example\nclass Unrelated\n")
+
+        plan = build_plan(
+            project.root, project.snapshot, project.generated,
+            (project.existing, kotlin_root), "java",
+        )
+        finding = next(
+            item for item in plan.findings if item.kind == "synchronize-primary-key"
+        )
+        self.assertEqual("SAFE", finding.status)
+        project.commit()
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertEqual("SUCCESS", result.state)
+        self.assertIn("@Id", target.read_text())
+        self.assertEqual("package example\nclass Unrelated\n", unrelated.read_text())
+
+        custom_source = project.root / "src/custom/java"
+        custom_source.mkdir(parents=True)
+        with self.assertRaises(PlanInputError):
+            build_plan(
+                project.root, project.snapshot, project.generated,
+                (custom_source,), "java",
+            )
+
+        custom_generated = project.root / "build/custom-generated"
+        custom_candidate = custom_generated / "example/entity/Employee.java"
+        custom_candidate.parent.mkdir(parents=True)
+        custom_candidate.write_text(project.generated_file().read_text())
+        with self.assertRaises(PlanInputError):
+            build_plan(
+                project.root, project.snapshot, custom_generated,
+                (project.existing,), "java",
+            )
 
     def test_manifest_validation_rejects_versions_duplicates_scope_pk_family_and_paths(self) -> None:
         project = ProjectFixture(self)

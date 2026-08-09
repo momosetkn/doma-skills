@@ -62,8 +62,9 @@ def apply_plan(
     root = _project_root(project_root)
     merge_plan = load_plan(plan) if isinstance(plan, (str, Path)) else plan
     _validate_plan_object(merge_plan)
+    source_roots, language = _canonical_planning_request(root, merge_plan)
     _verify_hashes(root, merge_plan)
-    _verify_canonical_plan(root, merge_plan)
+    _verify_canonical_plan(root, merge_plan, source_roots, language)
     approved = frozenset(approvals)
     review_by_id = {
         finding.finding_id: finding
@@ -175,46 +176,112 @@ def _validate_hash_pairs(pairs: Sequence[tuple[str, str]], name: str) -> None:
             raise PlanInputError("invalid " + name + " SHA-256")
 
 
-def _verify_canonical_plan(root: Path, plan: MergePlan) -> None:
-    generated_root = _strict_subdirectory(
-        root, "build/doma-codegen/generated", "generated root"
+def _canonical_planning_request(
+    root: Path,
+    plan: MergePlan,
+) -> tuple[tuple[Path, ...], str]:
+    _strict_subdirectory(root, "build/doma-codegen/generated", "generated root")
+    generated_root_text = "build/doma-codegen/generated"
+    supported = {
+        "src/main/java": root / "src/main/java",
+        "src/main/kotlin": root / "src/main/kotlin",
+    }
+    selected_roots: set[str] = set()
+    languages: set[str] = set()
+
+    for path, _ in plan.generated_hashes:
+        if not _plan_path_below(path, generated_root_text):
+            raise UnsafeProjectError("planned generated input is outside the managed root")
+        languages.add(_source_language(path))
+    for path, _ in plan.source_hashes:
+        source_root = next(
+            (name for name in supported if _plan_path_below(path, name)), None
+        )
+        if source_root is None:
+            raise UnsafeProjectError("planned source input is outside supported source roots")
+        selected_roots.add(source_root)
+        languages.add(_source_language(path))
+
+    for finding in plan.findings:
+        existing_root = finding.database.get("existing_root")
+        if existing_root is not None:
+            if not isinstance(existing_root, str) or existing_root not in supported:
+                raise UnsafeProjectError("proposal selects an unsupported existing source root")
+            selected_roots.add(existing_root)
+        source_root_values = finding.database.get("source_roots")
+        if source_root_values is not None:
+            if not isinstance(source_root_values, list) or any(
+                not isinstance(item, str) or item not in supported
+                for item in source_root_values
+            ):
+                raise UnsafeProjectError("proposal contains unsupported source-root choices")
+            selected_roots.update(source_root_values)
+        finding_generated_root = finding.database.get("generated_root")
+        if (
+            finding_generated_root is not None
+            and finding_generated_root != generated_root_text
+        ):
+            raise UnsafeProjectError("proposal selects a non-managed generated root")
+        generated_path = finding.database.get("generated_path")
+        if generated_path is not None and (
+            not isinstance(generated_path, str)
+            or not _plan_path_below(generated_path, generated_root_text)
+        ):
+            raise UnsafeProjectError("proposal generated path is outside the managed root")
+
+    for language in languages:
+        selected_roots.add("src/main/" + language)
+    if not selected_roots:
+        selected_roots.update(
+            name for name, path in supported.items() if path.is_dir() and not path.is_symlink()
+        )
+    source_roots = tuple(
+        _strict_subdirectory(root, name, "existing source root")
+        for name in ("src/main/java", "src/main/kotlin")
+        if name in selected_roots
     )
-    generated_languages = _source_languages(generated_root)
-    source_roots: list[Path] = []
-    for language in ("java", "kotlin"):
-        source_root = root / "src/main" / language
-        if not source_root.is_dir() or source_root.is_symlink():
-            continue
-        existing_languages = _source_languages(source_root)
-        if language in generated_languages or language in existing_languages:
-            source_roots.append(source_root)
     if not source_roots:
         raise UnsafeProjectError("no supported canonical source root was discovered")
+    language = (
+        next(iter(languages)) if len(languages) == 1 else "auto"
+    )
+    return source_roots, language
+
+
+def _verify_canonical_plan(
+    root: Path,
+    plan: MergePlan,
+    source_roots: Sequence[Path],
+    language: str,
+) -> None:
+    generated_root = root / "build/doma-codegen/generated"
     expected = build_plan(
         root,
         root / SNAPSHOT_PATH,
         generated_root,
         tuple(source_roots),
-        "auto",
+        language,
     )
     if plan != expected:
         raise PlanInputError("merge plan does not match the current canonical proposal")
 
 
-def _source_languages(root: Path) -> set[str]:
-    languages: set[str] = set()
-    for current, directories, files in os.walk(root, followlinks=False):
-        current_path = Path(current)
-        for name in tuple(directories) + tuple(files):
-            if (current_path / name).is_symlink():
-                raise UnsafeProjectError("canonical source layout contains a symbolic link")
-        for name in files:
-            suffix = Path(name).suffix
-            if suffix == ".java":
-                languages.add("java")
-            elif suffix == ".kt":
-                languages.add("kotlin")
-    return languages
+def _plan_path_below(path: str, root: str) -> bool:
+    relative = Path(path)
+    try:
+        remainder = relative.relative_to(root)
+    except ValueError:
+        return False
+    return remainder != Path(".")
+
+
+def _source_language(path: str) -> str:
+    suffix = Path(path).suffix
+    if suffix == ".java":
+        return "java"
+    if suffix == ".kt":
+        return "kotlin"
+    raise UnsafeProjectError("planned source input has an unsupported language")
 
 
 def _verify_hashes(root: Path, plan: MergePlan) -> None:

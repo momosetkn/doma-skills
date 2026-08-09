@@ -34,6 +34,45 @@ _FINDING_ID_MARKER = "{finding_id}"
 _STATUS = {"SAFE", "REVIEW_REQUIRED", "BLOCKED"}
 _EDIT_KINDS = {"create", "insert", "replace", "delete"}
 _SOURCE_SUFFIXES = {".java": "java", ".kt": "kotlin"}
+_STANDARD_TYPE_NAMES = {
+    "bigint": "Long", "binary": "byte[]", "bit": "Boolean", "blob": "Blob",
+    "boolean": "Boolean", "char": "String", "clob": "Clob", "date": "LocalDate",
+    "decimal": "BigDecimal", "double": "Double", "float": "Float",
+    "integer": "Integer", "longnvarchar": "String", "longvarbinary": "byte[]",
+    "longvarchar": "String", "nchar": "String", "nclob": "NClob",
+    "numeric": "BigDecimal", "nvarchar": "String", "real": "Float",
+    "smallint": "Short", "time": "LocalTime", "timestamp": "LocalDateTime",
+    "tinyint": "Short", "varbinary": "byte[]", "varchar": "String", "xml": "SQLXML",
+}
+_POSTGRES_TYPE_NAMES = {
+    "bigserial": "Long", "bit": "byte[]", "bool": "Boolean", "bpchar": "String",
+    "bytea": "byte[]", "float4": "Float", "float8": "Double", "int2": "Short",
+    "int4": "Integer", "int8": "Long", "money": "Float", "oid": "Blob",
+    "serial": "Integer", "text": "String", "timestamptz": "LocalDateTime",
+    "timetz": "LocalTime", "varbit": "byte[]", "varchar": "String",
+}
+_MYSQL_TYPE_NAMES = {
+    "bigint": "Long", "bigint unsigned": "BigInteger", "bool": "Boolean",
+    "boolean": "Boolean", "date": "LocalDate", "datetime": "LocalDateTime",
+    "dec": "BigDecimal", "dec unsigned": "BigDecimal", "decimal": "BigDecimal",
+    "decimal unsigned": "BigDecimal", "double": "Double", "double precision": "Double",
+    "double precision unsigned": "Double", "double unsigned": "Double", "float": "Float",
+    "float unsigned": "Float", "int": "Integer", "int unsigned": "Long",
+    "integer": "Integer", "integer unsigned": "Long", "mediumint": "Integer",
+    "mediumint unsigned": "Integer", "serial": "BigInteger", "smallint": "Short",
+    "smallint unsigned": "Integer", "time": "LocalTime", "timestamp": "LocalDateTime",
+    "year": "Short", "tinyblob": "Blob", "blob": "Blob", "mediumblob": "Blob",
+    "longblob": "Blob", "binary": "byte[]", "varbinary": "byte[]",
+}
+_JDBC_FALLBACK_TYPES = {
+    -7: "Boolean", -6: "Short", -5: "Long", -4: "byte[]", -3: "byte[]",
+    -2: "byte[]", -1: "String", 1: "String", 2: "BigDecimal", 3: "BigDecimal",
+    4: "Integer", 5: "Short", 6: "Float", 7: "Float", 8: "Double",
+    12: "String", 16: "Boolean", 91: "LocalDate", 92: "LocalTime",
+    93: "LocalDateTime", 2004: "Blob", 2005: "Clob", 2009: "SQLXML",
+    2011: "NClob", -16: "String", -15: "String", -9: "String",
+}
+_KOTLIN_BASIC_TYPES = {"Integer": "Int"}
 _SENSITIVE = re.compile(
     r"(?i)(?:\b(?:https?|jdbc:[a-z0-9]+)://|\b(?:user|password|passwd|token|access[_-]?key|secret)\s*[:=]|\bAKIA[0-9A-Z]{12,})"
 )
@@ -102,6 +141,7 @@ class _ParseFailure:
 
 @dataclass(frozen=True)
 class _Table:
+    database: Literal["postgresql", "mysql"]
     identity: TableIdentity
     raw: dict[str, object]
     columns: tuple[dict[str, object], ...]
@@ -123,11 +163,16 @@ def build_plan(
     if _relative(root, snapshot_path) != SNAPSHOT_PATH:
         raise PlanInputError("schema snapshot must use the managed build path")
     generated_root = _input_path(root, generated_dir, directory=True)
+    if _relative(root, generated_root) != "build/doma-codegen/generated":
+        raise PlanInputError("generated candidates must use the managed build path")
     if not existing_roots:
         raise PlanInputError("at least one existing source root is required")
     source_roots = tuple(_input_path(root, item, directory=True) for item in existing_roots)
     if len(set(source_roots)) != len(source_roots):
         raise PlanInputError("duplicate existing source root")
+    supported_source_roots = {root / "src/main/java", root / "src/main/kotlin"}
+    if any(source_root not in supported_source_roots for source_root in source_roots):
+        raise PlanInputError("existing roots must be supported project source roots")
     if any(_contains_path(source_root, generated_root) or _contains_path(generated_root, source_root)
            for source_root in source_roots):
         raise PlanInputError("generated and existing roots must not overlap")
@@ -561,7 +606,26 @@ def _compare_entity(
                 ))
 
         blocked_use = _has_external_reference(references, existing.file.path, old, old_prop)
-        if old_prop.type_name != new_prop.type_name:
+        type_changed = old_prop.type_name != new_prop.type_name
+        nullability_changed = (
+            old.language == "kotlin" and old_prop.nullable != new_prop.nullable
+        )
+        if old.language == "kotlin" and type_changed and nullability_changed:
+            status = "BLOCKED" if blocked_use else "REVIEW_REQUIRED"
+            edits = () if blocked_use else _kotlin_property_declaration_edits(
+                existing, candidate, old_prop, new_prop
+            )
+            findings.append(_make_finding(
+                status, "kotlin-type-nullability", path, table.identity, new_prop.column,
+                {**database_base, "column": column},
+                _property_excerpt(old_source, old_prop),
+                _property_excerpt(new_source, new_prop),
+                "Kotlin type and nullability change as one application-level declaration.",
+                "Migrate the retained property reference before replanning."
+                if blocked_use else
+                "Review callers, then approve this exact combined generated declaration.", edits,
+            ))
+        elif type_changed:
             domain = any(
                 reason == "domain-typed property: " + old_prop.name
                 for reason in old.unsupported_reasons
@@ -589,7 +653,7 @@ def _compare_entity(
                 if edits else "Review Domain conversion and all source uses manually.", edits,
             ))
 
-        if old.language == "kotlin" and old_prop.nullable != new_prop.nullable:
+        if nullability_changed and not type_changed:
             status = "BLOCKED" if blocked_use else "REVIEW_REQUIRED"
             edits = () if blocked_use else _kotlin_property_declaration_edits(
                 existing, candidate, old_prop, new_prop
@@ -648,6 +712,10 @@ def _new_entity_finding(
                 {"table": table.raw, "column": column, "generated_path": candidate.file.path},
             )
 
+    candidate_mismatch = _new_entity_candidate_mismatch(table, candidate)
+    if candidate_mismatch is not None:
+        return candidate_mismatch
+
     suffix = candidate.file.absolute.suffix
     eligible = [source_root for source_root in source_roots if any(
         item.absolute.suffix == suffix and item.root == _relative(root, source_root)
@@ -684,6 +752,125 @@ def _new_entity_finding(
         "The table, generated entity, language, package path, and source root are unique.",
         "Create the generated entity without deleting or renaming any existing type.", (edit,),
     )
+
+
+def _new_entity_candidate_mismatch(
+    table: _Table,
+    candidate: _ParsedFile,
+) -> Finding | None:
+    entity = candidate.parsed.entity
+    path = candidate.file.path
+    database_base: dict[str, object] = {
+        "table": table.raw,
+        "generated_path": path,
+    }
+    db_columns = {str(column["name"]): column for column in table.columns}
+    candidate_columns = {prop.column: prop for prop in entity.properties}
+    missing = sorted(set(db_columns) - set(candidate_columns))
+    extra = sorted(set(candidate_columns) - set(db_columns))
+    if missing or extra:
+        return _make_finding(
+            "BLOCKED", "generated-column-mismatch", path, table.identity, None,
+            {**database_base, "missing_columns": missing, "extra_columns": extra},
+            None, None,
+            "A new Entity candidate must map exactly the snapshot column set.",
+            "Regenerate the complete candidate from the authoritative snapshot.", (),
+        )
+
+    for column_name, column in db_columns.items():
+        prop = candidate_columns[column_name]
+        expected_type = _expected_basic_type(table, column, entity.language)
+        if expected_type is None or prop.type_name != expected_type:
+            return _make_finding(
+                "BLOCKED", "generated-type-mismatch", path, table.identity, column_name,
+                {**database_base, "column": column, "expected_type": expected_type},
+                None, None,
+                "The candidate basic type is not the proven CodeGen type for the JDBC metadata.",
+                "Regenerate the candidate; do not infer an application type manually.", (),
+            )
+        if entity.language == "kotlin" and prop.nullable is not bool(column["nullable"]):
+            return _make_finding(
+                "BLOCKED", "generated-nullability-mismatch", path, table.identity, column_name,
+                {**database_base, "column": column}, None, None,
+                "The candidate Kotlin nullability does not match the snapshot column.",
+                "Regenerate the candidate from the authoritative snapshot.", (),
+            )
+
+    db_pk = tuple(str(item["column"]) for item in table.primary_key)
+    candidate_pk = tuple(
+        prop.column
+        for prop in entity.properties
+        if _annotation(prop, "org.seasar.doma.Id") is not None
+    )
+    if set(candidate_pk) != set(db_pk) or len(candidate_pk) != len(db_pk):
+        return _make_finding(
+            "BLOCKED", "candidate-primary-key-mismatch", path, table.identity, None,
+            {**database_base, "primary_key": list(table.primary_key)}, None, None,
+            "The candidate @Id set does not exactly match the snapshot primary key.",
+            "Regenerate the complete primary-key mapping.", (),
+        )
+
+    for prop in entity.properties:
+        column = db_columns[prop.column]
+        generated = _annotation(prop, "org.seasar.doma.GeneratedValue")
+        expects_identity = (
+            column.get("auto_increment") is True
+            and len(db_pk) == 1
+            and prop.column in candidate_pk
+        )
+        generated_is_identity = (
+            generated is not None
+            and dict(generated.arguments).get("strategy") == "GenerationType.IDENTITY"
+        )
+        if expects_identity != generated_is_identity:
+            return _make_finding(
+                "BLOCKED", "generated-value-semantics", path, table.identity, prop.column,
+                {**database_base, "column": column}, None, None,
+                "The candidate @GeneratedValue does not exactly match auto-increment metadata.",
+                "Regenerate the candidate and confirm the generation strategy.", (),
+            )
+        if generated is not None and prop.column not in candidate_pk:
+            return _make_finding(
+                "BLOCKED", "generated-value-semantics", path, table.identity, prop.column,
+                {**database_base, "column": column}, None, None,
+                "@GeneratedValue is not attached to a proven primary-key property.",
+                "Choose generation semantics manually.", (),
+            )
+        for qualified, kind in (
+            ("org.seasar.doma.Version", "version-semantics"),
+            ("org.seasar.doma.TenantId", "tenant-id-semantics"),
+        ):
+            if _annotation(prop, qualified) is not None:
+                return _make_finding(
+                    "BLOCKED", kind, path, table.identity, prop.column,
+                    {**database_base, "column": column}, None, None,
+                    "Database metadata cannot prove this Doma application semantic.",
+                    "Choose the special mapping manually.", (),
+                )
+    return None
+
+
+def _expected_basic_type(
+    table: _Table,
+    column: dict[str, object],
+    language: str,
+) -> str | None:
+    type_name = str(column["type_name"]).casefold()
+    java_type = _STANDARD_TYPE_NAMES.get(type_name)
+    if table.database == "postgresql":
+        java_type = _POSTGRES_TYPE_NAMES.get(type_name, java_type)
+    else:
+        java_type = _MYSQL_TYPE_NAMES.get(type_name, java_type)
+        size = int(column["size"])
+        if type_name in {"bit", "tinyint"}:
+            java_type = "Boolean" if size <= 1 else "Byte"
+        elif type_name == "tinyint unsigned":
+            java_type = "Boolean" if size <= 1 else "Short"
+    if java_type is None:
+        java_type = _JDBC_FALLBACK_TYPES.get(int(column["jdbc_type"]))
+    if java_type is None or language == "java":
+        return java_type
+    return _KOTLIN_BASIC_TYPES.get(java_type, java_type)
 
 
 def _unsupported_finding(parsed_file: _ParsedFile, table: _Table, generated: bool) -> Finding:
@@ -1105,7 +1292,9 @@ def _has_external_reference(
             token for token in tokens
             if token.kind == "IDENT" or token.text in {".", ":"}
         ]
-        if item.language == "java" and any(token.text in {getter, setter} for token in significant):
+        if entity.language == "java" and any(
+            token.text in {getter, setter} for token in significant
+        ):
             return True
         for index, token in enumerate(significant[:-1]):
             if token.text == "." and significant[index + 1].text.strip("`") == prop.name:
@@ -1485,7 +1674,7 @@ def _validate_manifest(value: object) -> tuple[_Table, ...]:
         identities.add(identity)
         columns = _validate_columns(raw_table["columns"])
         primary_key = _validate_primary_key(raw_table["primary_key"], columns)
-        tables.append(_Table(identity, raw_table, columns, primary_key))
+        tables.append(_Table(database, identity, raw_table, columns, primary_key))
     if tuple(sorted((item.identity for item in tables))) != tuple(item.identity for item in tables):
         raise PlanInputError("tables are not canonically sorted")
     return tuple(tables)
