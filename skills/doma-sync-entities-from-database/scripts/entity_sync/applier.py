@@ -346,6 +346,12 @@ def _verify_git(root: Path, selected: Sequence[Finding]) -> None:
         for finding in selected
         for edit in finding.edits
     }
+    existing_targets = {
+        edit.path
+        for finding in selected
+        for edit in finding.edits
+        if edit.kind != "create"
+    }
     pathspecs.update(
         path.name for path in (root / "build.gradle.kts", root / "build.gradle")
         if path.is_file() and not path.is_symlink()
@@ -357,14 +363,21 @@ def _verify_git(root: Path, selected: Sequence[Finding]) -> None:
         )
         if inside.returncode != 0 or inside.stdout.strip() != "true":
             raise UnsafeProjectError("project root is not a Git worktree")
+        for path in sorted(existing_targets):
+            tracked = subprocess.run(
+                ["git", "ls-files", "--error-unmatch", "--", path],
+                cwd=root, text=True, capture_output=True, check=False,
+            )
+            if tracked.returncode != 0:
+                raise UnsafeProjectError("existing source target is not tracked by Git")
         status_result = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no", "--", *sorted(pathspecs)],
+            ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", *sorted(pathspecs)],
             cwd=root, text=True, capture_output=True, check=False,
         )
     except OSError as exception:
         raise UnsafeProjectError("Git status could not be verified") from exception
     if status_result.returncode != 0 or status_result.stdout:
-        raise UnsafeProjectError("tracked project state is not clean")
+        raise UnsafeProjectError("selected project targets are not clean")
 
 
 def _prepare_content(target: Path, edits: Sequence[Edit]) -> tuple[bytes, bool, int]:

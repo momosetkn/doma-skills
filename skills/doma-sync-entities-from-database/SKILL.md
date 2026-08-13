@@ -10,7 +10,7 @@ Synchronize database physical facts through an isolated generated candidate, nev
 ## Workflow
 
 1. Inspect the existing project and run its annotation-processing build before editing. Require Gradle 8+, Java 17+, a supported `build.gradle.kts` or `build.gradle`, and conventional Java/Kotlin source roots. Stop if Doma processing is already broken. Read [Supported Projects](references/supported-projects.md).
-2. Inspect Git status. Stop if the selected build file or any target entity is dirty. Never stage, reset, restore, or discard the project's changes.
+2. Inspect Git status. Require the selected build file and every existing target entity to be tracked and clean; stop for dirty, untracked, or ignored targets. Never stage, reset, restore, or discard the project's changes.
 3. Confirm PostgreSQL schema or MySQL catalog, an explicit table regex, entity package/language, and connection mode. Require explicit confirmation before using `.*`. Read [Database Connections](references/database-connections.md); for RDS, Aurora, or RDS Proxy also read [AWS Security](references/aws-security.md).
 4. Run the [CodeGen configuration planner](scripts/configure-codegen.py) with `plan`. Inspect its JSON and build-file diff, then run `apply`. Preserve compatible project-selected versions; do not silently upgrade Gradle, Java, Kotlin, Doma, CodeGen, or the JDBC driver. Read [CodeGen Configuration](references/codegen-configuration.md).
 5. Run the [generation wrapper](scripts/generate-entities.sh). It uses the [JDBC snapshot helper](scripts/schema-snapshot.java), invokes only official `domaCodeGenDomaSyncEntity`, and writes candidates below `build/doma-codegen/generated`. It must not write to a source root.

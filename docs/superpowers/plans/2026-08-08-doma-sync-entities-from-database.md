@@ -184,7 +184,12 @@ python3 skills/doma-sync-entities-from-database/scripts/configure-codegen.py pla
   --table-pattern 'tenant_.*' --codegen-version 3.2.2 \
   --driver-coordinate org.postgresql:postgresql:42.7.10 \
   --metamodel true --output-plan build/doma-codegen/configure-plan.json
-python3 skills/doma-sync-entities-from-database/scripts/configure-codegen.py apply --plan build/doma-codegen/configure-plan.json
+python3 skills/doma-sync-entities-from-database/scripts/configure-codegen.py apply \
+  --project-root . --language java --database postgresql \
+  --entity-package com.example.entity --schema public \
+  --table-pattern 'tenant_.*' --codegen-version 3.2.2 \
+  --driver-coordinate org.postgresql:postgresql:42.7.10 \
+  --metamodel true --plan build/doma-codegen/configure-plan.json
 skills/doma-sync-entities-from-database/scripts/generate-entities.sh --project-root . --connection local --database postgresql
 python3 skills/doma-sync-entities-from-database/scripts/compare-and-merge-entities.py plan \
   --project-root . --schema-snapshot build/doma-codegen/schema-snapshot.json \
@@ -1186,7 +1191,7 @@ bash -n skills/doma-sync-entities-from-database/scripts/generate-entities.sh
 python3 -m py_compile \
   skills/doma-sync-entities-from-database/scripts/*.py \
   skills/doma-sync-entities-from-database/scripts/entity_sync/*.py
-python3 -m unittest discover -s tests/doma-sync-entities-from-database -p 'test-*.py' -v
+python3 tests/doma-sync-entities-from-database/run-unit-tests.py -v
 bash tests/doma-sync-entities-from-database/run-compile-fixtures.sh
 bash tests/doma-sync-entities-from-database/test-install.sh
 git diff --check -- README.md skills/doma-sync-entities-from-database \
@@ -1231,7 +1236,7 @@ bash -n skills/doma-sync-entities-from-database/scripts/generate-entities.sh
 python3 -m py_compile \
   skills/doma-sync-entities-from-database/scripts/*.py \
   skills/doma-sync-entities-from-database/scripts/entity_sync/*.py
-python3 -m unittest discover -s tests/doma-sync-entities-from-database -p 'test-*.py' -v
+python3 tests/doma-sync-entities-from-database/run-unit-tests.py -v
 bash tests/doma-sync-entities-from-database/run-compile-fixtures.sh
 bash tests/doma-sync-entities-from-database/run-testcontainers.sh || test "$?" -eq 77
 npx skills add . --list

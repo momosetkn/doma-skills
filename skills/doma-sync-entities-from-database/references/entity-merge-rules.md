@@ -110,7 +110,8 @@ Blocked findings contain no edit. Causes include:
   or database-comment disagreement;
 - any retained Java/Kotlin direct, accessor, callable, receiver-scope, factory,
   or inferred Entity reference affected by removal or signature change;
-- dirty target, path/symlink escape, stale hash, tampered plan, unknown approval,
+- dirty, untracked, or ignored existing target; path/symlink escape; stale hash;
+  tampered plan; unknown approval;
   or inability to reconstruct the exact canonical plan.
 
 Do not hand-edit around a blocker. Report it with the needed manual decision or

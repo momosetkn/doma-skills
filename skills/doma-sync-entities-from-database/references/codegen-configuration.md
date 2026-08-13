@@ -51,13 +51,26 @@ diff before applying:
 
 ```bash
 python3 ./scripts/configure-codegen.py apply \
-  --project-root . --plan build/doma-codegen/configure-plan.json
+  --project-root . --language java --database postgresql \
+  --entity-package com.example.entity --schema public \
+  --table-pattern 'tenant_.*' --codegen-version 3.2.2 \
+  --driver-coordinate org.postgresql:postgresql:42.7.10 \
+  --metamodel true --plan build/doma-codegen/configure-plan.json
 ```
 
 Apply returns `66` when the build hash is stale and `65` for unsafe project
-state. It preserves LF/CRLF and uses atomic replacement. After apply, rerun
+state. Repeat the reviewed non-secret request inputs on `apply`; it rebuilds the
+canonical proposal from those values and the current project, rejects any plan
+path/edit/hash/content substitution, and writes only the selected tracked,
+clean build file. Unrelated tracked changes remain allowed. Apply preserves
+LF/CRLF and uses atomic replacement. After apply, rerun
 `plan` with the same inputs and require the newly generated plan to contain no
 mutations; do not re-apply the stale original plan.
+
+Schema, catalog, package, and regex values are rendered as escaped Kotlin or
+Groovy string literals. The value delivered to CodeGen is the exact CLI value;
+backslashes, quotes, dollar signs, and control escapes cannot break an ordinary
+credential-free Gradle task.
 
 The planner owns only marked plugin/driver lines and the managed block. It
 stops on multiple declarations, dynamic structures, an ambiguous unmanaged

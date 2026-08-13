@@ -34,6 +34,12 @@ _FINDING_ID_MARKER = "{finding_id}"
 _STATUS = {"SAFE", "REVIEW_REQUIRED", "BLOCKED"}
 _EDIT_KINDS = {"create", "insert", "replace", "delete"}
 _SOURCE_SUFFIXES = {".java": "java", ".kt": "kotlin"}
+_ENTITY_COLLECTION_TYPES = {
+    "ArrayList", "Collection", "Deque", "HashSet", "Iterable",
+    "LinkedList", "List", "MutableCollection", "MutableIterable",
+    "MutableList", "MutableSet", "NavigableSet", "Queue", "Sequence",
+    "Set", "SortedSet", "Stack", "TreeSet", "Vector",
+}
 _STANDARD_TYPE_NAMES = {
     "bigint": "Long", "binary": "byte[]", "bit": "Boolean", "blob": "Blob",
     "boolean": "Boolean", "char": "String", "clob": "Clob", "date": "LocalDate",
@@ -158,6 +164,19 @@ class _Table:
 class _CodeGenNaming:
     package_name: str
     language: Literal["java", "kotlin"]
+
+
+@dataclass(frozen=True)
+class _CollectionSymbols:
+    variables: tuple[tuple[str, int, int, bool], ...]
+    factories: frozenset[str]
+
+    def names_at(self, position: int) -> frozenset[str]:
+        latest: dict[str, tuple[int, bool]] = {}
+        for name, declared_at, scope_end, direct in self.variables:
+            if declared_at <= position <= scope_end:
+                latest[name] = (declared_at, direct)
+        return frozenset(name for name, (_, direct) in latest.items() if direct)
 
 
 def build_plan(
@@ -1902,6 +1921,7 @@ def _typed_entity_variables(
     factory_keys: frozenset[tuple[str, str]],
 ) -> frozenset[str]:
     result: set[str] = set()
+    collection_symbols = _entity_collection_symbols(item, tokens, entity)
     if _file_resolves_entity(item, entity) and item.language == "kotlin":
         for index in range(1, len(tokens) - 1):
             if (
@@ -1924,14 +1944,235 @@ def _typed_entity_variables(
             if token.text != "=":
                 continue
             target = _assignment_target(tokens, index)
+            if not target or not _assignment_declares_inferred_variable(
+                tokens, index, target
+            ):
+                continue
             if not target or target in result:
                 continue
             if _entity_expression_after(
-                item, tokens, index + 1, entity, frozenset(result), factory_keys
+                item, tokens, index + 1, entity, frozenset(result),
+                collection_symbols.names_at(index), collection_symbols.factories,
+                factory_keys,
             ):
                 result.add(target)
                 changed = True
     return frozenset(result)
+
+
+def _entity_collection_symbols(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    entity: EntityModel,
+) -> _CollectionSymbols:
+    if not _file_resolves_entity(item, entity):
+        return _CollectionSymbols((), frozenset())
+    declarations: list[tuple[str, int, int, bool]] = []
+    factories: set[str] = set()
+    for index in range(len(tokens) - 3):
+        if (
+            _identifier(tokens[index]) not in _ENTITY_COLLECTION_TYPES
+            or tokens[index + 1].text != "<"
+        ):
+            continue
+        close = _matching_token(tokens, index + 1, "<", ">")
+        if close is None:
+            continue
+        direct = _direct_entity_type_argument(tokens, index + 2, close, entity)
+        if item.language == "kotlin":
+            if (
+                direct
+                and index >= 3
+                and tokens[index - 1].text == ":"
+                and tokens[index - 2].text == ")"
+            ):
+                open_index = _matching_token_before(tokens, index - 2, "(", ")")
+                if open_index is not None and open_index > 0:
+                    name = _identifier(tokens[open_index - 1])
+                    if name:
+                        factories.add(name)
+            elif index >= 2 and tokens[index - 1].text == ":":
+                variable = _identifier(tokens[index - 2])
+                if variable:
+                    variable_index = index - 2
+                    declarations.append((
+                        variable, variable_index,
+                        _binding_scope_end(tokens, variable_index), direct,
+                    ))
+        elif close + 1 < len(tokens):
+            name = _identifier(tokens[close + 1])
+            if name:
+                if close + 2 < len(tokens) and tokens[close + 2].text == "(":
+                    if direct:
+                        factories.add(name)
+                else:
+                    variable_index = close + 1
+                    declarations.append((
+                        name, variable_index,
+                        _binding_scope_end(tokens, variable_index), direct,
+                    ))
+    declarations.sort(key=lambda item: item[1])
+    inferred: list[tuple[str, int, int, bool]] = []
+    changed = True
+    while changed:
+        changed = False
+        for index, token in enumerate(tokens[:-1]):
+            if token.text != "=":
+                continue
+            target = _assignment_target(tokens, index)
+            statement_start = max(
+                (cursor for cursor in range(index) if tokens[cursor].text in {";", "{", "}"}),
+                default=-1,
+            )
+            if any(
+                name == target and statement_start < declared_at < index
+                for name, declared_at, _, _ in declarations
+            ):
+                continue
+            active = _collection_names_at(declarations, inferred, index)
+            direct = _collection_expression_after(
+                tokens, index + 1, active, frozenset(factories), entity
+            )
+            binding = (target, index, _binding_scope_end(tokens, index), direct)
+            if target and binding not in inferred:
+                inferred = [item for item in inferred if item[:2] != binding[:2]]
+                inferred.append(binding)
+                changed = True
+    bindings = declarations + inferred
+    return _CollectionSymbols(
+        tuple(sorted(set(bindings), key=lambda item: item[1])),
+        frozenset(factories),
+    )
+
+
+def _collection_names_at(
+    declarations: Sequence[tuple[str, int, int, bool]],
+    inferred: Sequence[tuple[str, int, int, bool]],
+    position: int,
+) -> frozenset[str]:
+    latest: dict[str, tuple[int, bool]] = {}
+    for name, declared_at, scope_end, direct in declarations:
+        if declared_at <= position <= scope_end:
+            latest[name] = (declared_at, direct)
+    for name, declared_at, scope_end, direct in inferred:
+        if declared_at <= position <= scope_end and (
+            name not in latest or declared_at >= latest[name][0]
+        ):
+            latest[name] = (declared_at, direct)
+    return frozenset(name for name, (_, direct) in latest.items() if direct)
+
+
+def _assignment_declares_inferred_variable(
+    tokens: Sequence[Token], equal_index: int, target: str
+) -> bool:
+    start = max(0, equal_index - 12)
+    return any(
+        _identifier(tokens[index]) in {"val", "var"}
+        and any(
+            _identifier(tokens[cursor]) == target
+            for cursor in range(index + 1, equal_index)
+        )
+        for index in range(start, equal_index)
+    )
+
+
+def _binding_scope_end(tokens: Sequence[Token], declaration: int) -> int:
+    paren_stack: list[int] = []
+    brace_stack: list[int] = []
+    for index in range(declaration + 1):
+        text = tokens[index].text
+        if text == "(":
+            paren_stack.append(index)
+        elif text == ")" and paren_stack:
+            paren_stack.pop()
+        elif text == "{":
+            brace_stack.append(index)
+        elif text == "}" and brace_stack:
+            brace_stack.pop()
+    if paren_stack:
+        close = _matching_token(tokens, paren_stack[-1], "(", ")")
+        if close is not None:
+            for cursor in range(close + 1, len(tokens)):
+                if tokens[cursor].text == "=":
+                    return _expression_scope_end(tokens, cursor + 1)
+                if tokens[cursor].text == "{":
+                    body_end = _matching_token(tokens, cursor, "{", "}")
+                    if body_end is not None:
+                        return body_end
+                    break
+                if tokens[cursor].text == ";":
+                    return cursor
+    if brace_stack:
+        close = _matching_token(tokens, brace_stack[-1], "{", "}")
+        if close is not None:
+            return close
+    return len(tokens) - 1
+
+
+def _expression_scope_end(tokens: Sequence[Token], start: int) -> int:
+    depths = {"(": 0, "[": 0, "{": 0}
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for cursor in range(start, len(tokens)):
+        text = tokens[cursor].text
+        if text in depths:
+            depths[text] += 1
+            continue
+        if text in pairs:
+            opener = pairs[text]
+            if depths[opener] > 0:
+                depths[opener] -= 1
+                continue
+            return max(start, cursor - 1)
+        if any(depths.values()):
+            continue
+        if text == ";" or _identifier(tokens[cursor]) in {
+            "class", "enum", "fun", "interface", "object", "record",
+        }:
+            return max(start, cursor - 1)
+    return len(tokens) - 1
+
+
+def _direct_entity_type_argument(
+    tokens: Sequence[Token], start: int, end: int, entity: EntityModel
+) -> bool:
+    cursor = start
+    if cursor < end and _identifier(tokens[cursor]) in {"in", "super"}:
+        return False
+    while cursor < end and _identifier(tokens[cursor]) in {"out", "extends"}:
+        cursor += 1
+    if cursor < end and tokens[cursor].text == "?":
+        cursor += 1
+        if cursor < end and _identifier(tokens[cursor]) == "super":
+            return False
+        while cursor < end and _identifier(tokens[cursor]) == "extends":
+            cursor += 1
+    parts: list[str] = []
+    while cursor < end:
+        name = _identifier(tokens[cursor])
+        if not name:
+            break
+        parts.append(name)
+        cursor += 1
+        if cursor >= end or tokens[cursor].text != ".":
+            break
+        cursor += 1
+    return bool(parts) and parts[-1] == entity.class_name and cursor == end
+
+
+def _matching_token_before(
+    tokens: Sequence[Token], end: int, opener: str, closer: str
+) -> int | None:
+    if end < 0 or tokens[end].text != closer:
+        return None
+    depth = 0
+    for index in range(end, -1, -1):
+        if tokens[index].text == closer:
+            depth += 1
+        elif tokens[index].text == opener:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
 
 
 def _assignment_target(tokens: Sequence[Token], equal_index: int) -> str:
@@ -1949,12 +2190,42 @@ def _assignment_target(tokens: Sequence[Token], equal_index: int) -> str:
     return _identifier(tokens[equal_index - 1]) if equal_index else ""
 
 
+def _collection_expression_after(
+    tokens: Sequence[Token],
+    start: int,
+    collections: frozenset[str],
+    collection_factories: frozenset[str],
+    entity: EntityModel,
+) -> bool:
+    while start < len(tokens) and (
+        _identifier(tokens[start]) == "new" or tokens[start].text == "("
+    ):
+        start += 1
+    if start >= len(tokens):
+        return False
+    name = _identifier(tokens[start])
+    if name in collections:
+        return True
+    if name in collection_factories:
+        return start + 1 < len(tokens) and tokens[start + 1].text == "("
+    if name not in _ENTITY_COLLECTION_TYPES:
+        return False
+    if start + 1 >= len(tokens) or tokens[start + 1].text != "<":
+        return False
+    close = _matching_token(tokens, start + 1, "<", ">")
+    return close is not None and _direct_entity_type_argument(
+        tokens, start + 2, close, entity
+    )
+
+
 def _entity_expression_after(
     item: _SourceFile,
     tokens: Sequence[Token],
     start: int,
     entity: EntityModel,
     variables: frozenset[str],
+    collections: frozenset[str],
+    collection_factories: frozenset[str],
     factory_keys: frozenset[tuple[str, str]],
 ) -> bool:
     while start < len(tokens) and (
@@ -1966,6 +2237,10 @@ def _entity_expression_after(
         return False
     name = _identifier(tokens[start])
     if name in variables:
+        return True
+    if _collection_chain_returns_entity(
+        tokens, start, collections, collection_factories
+    ):
         return True
     parts: list[str] = []
     cursor = start
@@ -1998,6 +2273,8 @@ def _entity_expression_before(
     end: int,
     entity: EntityModel,
     variables: frozenset[str],
+    collections: frozenset[str],
+    collection_factories: frozenset[str],
     factory_keys: frozenset[tuple[str, str]],
 ) -> bool:
     if end < 0:
@@ -2007,6 +2284,11 @@ def _entity_expression_before(
     if name in variables:
         return True
     if name == entity.class_name and _file_resolves_entity(item, entity):
+        return True
+    start = _receiver_expression_start(tokens, end)
+    if start is not None and _collection_chain_returns_entity(
+        tokens, start, collections, collection_factories, end=end
+    ):
         return True
     if last.text != ")":
         return False
@@ -2028,6 +2310,96 @@ def _entity_expression_before(
     ) or _factory_available(item, callable_name, factory_keys)
 
 
+def _receiver_expression_start(tokens: Sequence[Token], end: int) -> int | None:
+    depth = 0
+    for cursor in range(end, -1, -1):
+        text = tokens[cursor].text
+        if text in {")", "]", "}"}:
+            depth += 1
+        elif text in {"(", "[", "{"}:
+            depth -= 1
+            if depth < 0:
+                return cursor + 1
+        elif depth == 0 and text in {";", "=", ",", "return", "->"}:
+            return cursor + 1
+    return 0
+
+
+def _collection_chain_returns_entity(
+    tokens: Sequence[Token],
+    start: int,
+    collections: frozenset[str],
+    collection_factories: frozenset[str],
+    *,
+    end: int | None = None,
+) -> bool:
+    limit = len(tokens) if end is None else end + 1
+    if start >= limit:
+        return False
+    name = _identifier(tokens[start])
+    if name not in collections and name not in collection_factories:
+        return False
+    cursor = start + 1
+    if name in collection_factories and (
+        cursor >= limit or tokens[cursor].text != "("
+    ):
+        return False
+    if cursor < limit and tokens[cursor].text == "(":
+        close = _matching_token(tokens, cursor, "(", ")")
+        if close is None or close >= limit:
+            return False
+        cursor = close + 1
+    collection_state = True
+    iterator_state = False
+    while cursor < limit:
+        if tokens[cursor].text == "[":
+            close = _matching_token(tokens, cursor, "[", "]")
+            return bool(
+                collection_state
+                and close is not None
+                and close < limit
+                and (end is None or close + 1 == limit)
+            )
+        if tokens[cursor].text in {"?", "!"}:
+            cursor += 1
+            continue
+        if tokens[cursor].text != "." or cursor + 1 >= limit:
+            return False
+        method = _identifier(tokens[cursor + 1])
+        cursor += 2
+        if cursor < limit and tokens[cursor].text == "(":
+            close = _matching_token(tokens, cursor, "(", ")")
+            if close is None or close >= limit:
+                return False
+            cursor = close + 1
+        elif not (
+            collection_state
+            and method in {"filter", "filterNot"}
+            and cursor < limit
+            and tokens[cursor].text == "{"
+        ):
+            return False
+        if cursor < limit and tokens[cursor].text == "{":
+            lambda_close = _matching_token(tokens, cursor, "{", "}")
+            if lambda_close is None or lambda_close >= limit:
+                return False
+            cursor = lambda_close + 1
+        if collection_state and method in {"get", "first", "single"}:
+            return end is None or cursor == limit
+        if collection_state and method == "iterator":
+            collection_state = False
+            iterator_state = True
+            continue
+        if iterator_state and method == "next":
+            return end is None or cursor == limit
+        if collection_state and method in {
+            "filter", "filterNot", "subList",
+        }:
+            continue
+        return False
+    return False
+
+
 def _has_typed_member_reference(
     item: _SourceFile,
     tokens: Sequence[Token],
@@ -2036,6 +2408,7 @@ def _has_typed_member_reference(
     factory_keys: frozenset[tuple[str, str]],
 ) -> bool:
     variables = _typed_entity_variables(item, tokens, entity, factory_keys)
+    collection_symbols = _entity_collection_symbols(item, tokens, entity)
     for index, token in enumerate(tokens):
         member = _identifier(token)
         if member not in member_names:
@@ -2043,7 +2416,9 @@ def _has_typed_member_reference(
         if index >= 2 and tokens[index - 1].text == ".":
             receiver_end = _receiver_expression_end(tokens, index - 1)
             if _entity_expression_before(
-                item, tokens, receiver_end, entity, variables, factory_keys
+                item, tokens, receiver_end, entity, variables,
+                collection_symbols.names_at(receiver_end),
+                collection_symbols.factories, factory_keys,
             ):
                 return True
         if index >= 3 and tokens[index - 1].text == ":" and tokens[index - 2].text == ":":
@@ -2131,6 +2506,7 @@ def _has_kotlin_receiver_scope_reference(
     factory_keys: frozenset[tuple[str, str]],
 ) -> bool:
     variables = _typed_entity_variables(item, tokens, entity, factory_keys)
+    collection_symbols = _entity_collection_symbols(item, tokens, entity)
     for index, token in enumerate(tokens):
         scope_name = _identifier(token)
         if (
@@ -2140,7 +2516,9 @@ def _has_kotlin_receiver_scope_reference(
         ):
             receiver_end = _receiver_expression_end(tokens, index - 1)
             if _entity_expression_before(
-                item, tokens, receiver_end, entity, variables, factory_keys
+                item, tokens, receiver_end, entity, variables,
+                collection_symbols.names_at(receiver_end),
+                collection_symbols.factories, factory_keys,
             ):
                 body_start = next((
                     cursor for cursor in range(
@@ -2170,7 +2548,9 @@ def _has_kotlin_receiver_scope_reference(
             if close is None or close <= index + 2:
                 continue
             if not _entity_expression_before(
-                item, tokens, close - 1, entity, variables, factory_keys
+                item, tokens, close - 1, entity, variables,
+                collection_symbols.names_at(close - 1),
+                collection_symbols.factories, factory_keys,
             ):
                 continue
             body_start = close + 1

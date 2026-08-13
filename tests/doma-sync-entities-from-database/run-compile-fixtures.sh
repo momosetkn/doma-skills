@@ -205,6 +205,9 @@ configure_fixture() {
   )
   run_plan_command yes "${command[@]}"
   python3 "$CONFIGURATOR" apply --project-root "$project" \
+    --language "$language" --database "$database" --entity-package "$package" \
+    "${database_args[@]}" --table-pattern '.*' --codegen-version 3.2.2 \
+    --driver-coordinate "$driver" --metamodel "$metamodel" \
     --plan build/doma-codegen/configure-plan.json
   run_plan_command no "${command[@]}"
 }
@@ -225,13 +228,16 @@ run_fixture() {
   cp "$project/fixture/schema-snapshot.json" "$project/build/doma-codegen/schema-snapshot.json"
   cp -R "$project/fixture/generated" "$project/build/doma-codegen/generated"
 
-  configure_fixture "$project" "$language" "$database" "example.entity" "$metamodel"
-
   git -C "$project" init -q
   git -C "$project" config user.name "Doma Fixture"
   git -C "$project" config user.email "fixture@example.invalid"
   git -C "$project" add -- .
   git -C "$project" commit -qm "fixture baseline"
+
+  configure_fixture "$project" "$language" "$database" "example.entity" "$metamodel"
+
+  git -C "$project" add -- .
+  git -C "$project" commit -qm "configured fixture"
 
   local source_root="src/main/$language"
   run_merge_command python3 "$MERGER" plan --project-root "$project" \

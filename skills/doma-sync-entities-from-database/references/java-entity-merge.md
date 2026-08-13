@@ -45,7 +45,9 @@ exact diff. It applies only with that finding ID.
 
 Reference analysis includes Java direct fields/getters/setters and Kotlin calls
 or callable references to the generated JVM accessors, including qualified,
-parenthesized, factory-returned, and inferred Entity receivers. A proven use
+parenthesized, factory-returned, inferred Entity, and common generic collection
+extraction chains such as `get(index)`, `subList(...).get(index)`, and
+`iterator().next()` Entity receivers. A proven use
 makes the finding `BLOCKED` and editless.
 
 ## Fail-Closed Java Constructs

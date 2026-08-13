@@ -51,7 +51,9 @@ type-only or nullability-only ID is invalid.
 
 Reference analysis includes Kotlin direct/safe/non-null calls, callable
 references, inferred Entity assignments, Entity-returning factories,
-qualified/parenthesized receivers, extension functions, labeled receiver
+qualified/parenthesized receivers, common generic collection extraction through
+`get(index)`, indexing, `first`, and `filter` chains, extension functions,
+labeled receiver
 scopes, and `with`, `apply`, `run`, `let`, or `also`; it also includes Java JVM
 getter/setter references. Any affected use makes removal or signature change
 `BLOCKED`.

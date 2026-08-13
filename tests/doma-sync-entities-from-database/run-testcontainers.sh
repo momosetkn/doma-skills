@@ -299,6 +299,11 @@ public final class IntegrationMain {
         "tests/doma-sync-entities-from-database/fixtures/" + fixtureName);
     Path project = WORK.resolve(fixtureName);
     copyTree(source, project);
+    run(project, Map.of(), 0, List.of("git", "init", "-q"));
+    run(project, Map.of(), 0, List.of("git", "config", "user.name", "Doma Integration"));
+    run(project, Map.of(), 0, List.of("git", "config", "user.email", "fixture@example.invalid"));
+    run(project, Map.of(), 0, List.of("git", "add", "--", "."));
+    run(project, Map.of(), 0, List.of("git", "commit", "-qm", "fixture baseline"));
     List<String> configure = new ArrayList<>(List.of(
         "python3", CONFIGURATOR.toString(), "plan", "--project-root", project.toString(),
         "--language", language, "--database", database,
@@ -316,14 +321,25 @@ public final class IntegrationMain {
         "--metamodel", Boolean.toString(metamodel),
         "--output-plan", "build/doma-codegen/configure-plan.json"));
     run(project, Map.of(), 2, configure);
-    run(project, Map.of(), 0, List.of(
+    List<String> apply = new ArrayList<>(List.of(
         "python3", CONFIGURATOR.toString(), "apply", "--project-root", project.toString(),
+        "--language", language, "--database", database,
+        "--entity-package", "example.entity"));
+    if (database.equals("postgresql")) {
+      apply.addAll(List.of("--schema", "public"));
+    } else {
+      apply.addAll(List.of("--catalog", "fixture_catalog"));
+    }
+    apply.addAll(List.of(
+        "--table-pattern", ".*", "--codegen-version", "3.2.2",
+        "--driver-coordinate", database.equals("postgresql")
+            ? "org.postgresql:postgresql:42.7.10"
+            : "com.mysql:mysql-connector-j:26.7.0",
+        "--metamodel", Boolean.toString(metamodel),
         "--plan", "build/doma-codegen/configure-plan.json"));
-    run(project, Map.of(), 0, List.of("git", "init", "-q"));
-    run(project, Map.of(), 0, List.of("git", "config", "user.name", "Doma Integration"));
-    run(project, Map.of(), 0, List.of("git", "config", "user.email", "fixture@example.invalid"));
+    run(project, Map.of(), 0, apply);
     run(project, Map.of(), 0, List.of("git", "add", "--", "."));
-    run(project, Map.of(), 0, List.of("git", "commit", "-qm", "fixture baseline"));
+    run(project, Map.of(), 0, List.of("git", "commit", "-qm", "configured fixture"));
     return project;
   }
 

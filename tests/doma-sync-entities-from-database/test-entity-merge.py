@@ -2198,6 +2198,285 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("BLOCKED", finding.status)
                 self.assertFalse(finding.edits)
 
+    def test_generic_collection_get_receivers_block_java_and_kotlin_member_changes(self) -> None:
+        compile_temp = tempfile.TemporaryDirectory(prefix="entity-receiver-javac-")
+        self.addCleanup(compile_temp.cleanup)
+        compile_dir = Path(compile_temp.name)
+        compile_package = compile_dir / "example/entity"
+        compile_package.mkdir(parents=True)
+        (compile_package / "Employee.java").write_text(
+            "package example.entity; class Employee { void setId(Integer id) {} }\n",
+            encoding="utf-8",
+        )
+        (compile_package / "Box.java").write_text(
+            "package example.entity; class Box<T> { void setId(Integer id) {} }\n",
+            encoding="utf-8",
+        )
+        (compile_package / "Use.java").write_text(
+            "package example.entity; import java.util.ArrayList; import java.util.List; "
+            "class Use { List<Employee> employees() { return List.of(); } "
+            "void direct(List<Employee> es) { es.get(0).setId(1); } "
+            "void method() { employees().get(0).setId(1); } "
+            "void iterator(List<Employee> es) { es.iterator().next().setId(1); } "
+            "void subList(List<Employee> es) { es.subList(0, 1).get(0).setId(1); } "
+            "void assigned(List<Employee> source) { var es = source; es.get(0).setId(1); } "
+            "void constructed() { var es = new ArrayList<Employee>(); es.get(0).setId(1); } "
+            "void unrelated(List<Box<Employee>> es) { es.get(0).setId(1); } }\n",
+            encoding="utf-8",
+        )
+        compiled = subprocess.run(
+            ["javac", "-proc:none", *map(str, sorted(compile_package.glob("*.java")))],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
+
+        cases = (
+            (
+                "java-list-get",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Use { void use(List<Employee> es) { es.get(0).setId(1); } }\n",
+            ),
+            (
+                "kotlin-list-get",
+                "kt",
+                "package example.entity\n"
+                "fun use(es: List<Employee>) { es.get(0).id.toString() }\n",
+            ),
+            (
+                "java-assigned-list-get",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Use { void use(List<Employee> source) { "
+                "var es = source; es.get(0).setId(1); } }\n",
+            ),
+            (
+                "kotlin-assigned-list-get",
+                "kt",
+                "package example.entity\n"
+                "fun use(source: List<Employee>) { "
+                "val es = source; es.get(0).id.toString() }\n",
+            ),
+            (
+                "java-method-list-get",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Use { List<Employee> employees() { return List.of(); } "
+                "void use() { employees().get(0).setId(1); } }\n",
+            ),
+            (
+                "java-iterator-next",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Use { void use(List<Employee> es) { "
+                "es.iterator().next().setId(1); } }\n",
+            ),
+            (
+                "java-sublist-get",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Use { void use(List<Employee> es) { "
+                "es.subList(0, 1).get(0).setId(1); } }\n",
+            ),
+            (
+                "java-constructed-list-get",
+                "java",
+                "package example.entity; import java.util.ArrayList; "
+                "class Use { void use() { var es = new ArrayList<Employee>(); "
+                "es.get(0).setId(1); } }\n",
+            ),
+            (
+                "kotlin-index",
+                "kt",
+                "package example.entity\n"
+                "fun use(es: List<Employee>) { es[0].id.toString() }\n",
+            ),
+            (
+                "kotlin-filter-first",
+                "kt",
+                "package example.entity\n"
+                "fun use(es: List<Employee>) { "
+                "es.filter { true }.first().id.toString() }\n",
+            ),
+            (
+                "kotlin-function-first",
+                "kt",
+                "package example.entity\n"
+                "fun employees(): List<Employee> = emptyList()\n"
+                "fun use() { employees().first().id.toString() }\n",
+            ),
+            (
+                "java-field-after-shadow",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Box<T> {} class Use { List<Employee> es; "
+                "void shadow(List<Box<Employee>> es) { es.size(); } "
+                "void use() { es.get(0).setId(1); } }\n",
+            ),
+            (
+                "kotlin-property-after-shadow",
+                "kt",
+                "package example.entity\n"
+                "class Box<T>\n"
+                "val es: List<Employee> = emptyList()\n"
+                "fun shadow(es: List<Box<Employee>>) = es.size.toString()\n"
+                "fun use() = es[0].id.toString()\n",
+            ),
+        )
+        for label, suffix, probe in cases:
+            with self.subTest(receiver=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Long", annotations=("@Id",),
+                        doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                target = project.existing_file(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Integer", annotations=("@Id",),
+                        doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Integer"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                reference_root = (
+                    project.existing if suffix == "java"
+                    else project.root / "src/main/kotlin"
+                )
+                reference = reference_root / f"example/entity/Use.{suffix}"
+                reference.parent.mkdir(parents=True, exist_ok=True)
+                reference.write_text(probe, encoding="utf-8")
+                roots = (
+                    (project.existing,)
+                    if suffix == "java"
+                    else (project.existing, reference_root)
+                )
+
+                plan = build_plan(
+                    project.root, project.snapshot, project.generated, roots, "java"
+                )
+                finding = next(
+                    item for item in plan.findings
+                    if item.kind in {"widen-basic-type", "narrow-basic-type"}
+                )
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
+                before = target.read_bytes()
+                project.commit()
+                result = apply_plan(project.root, plan, approvals=())
+                self.assertEqual("BLOCKED", result.state)
+                self.assertEqual(before, target.read_bytes())
+
+        unrelated_cases = (
+            (
+                "java-nested-generic",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Box<T> { void setId(Integer id) {} } "
+                "class Use { void use(List<Box<Employee>> es) { "
+                "es.get(0).setId(1); } }\n",
+            ),
+            (
+                "kotlin-nested-generic",
+                "kt",
+                "package example.entity\n"
+                "class Box<T>(var id: Int)\n"
+                "fun use(es: List<Box<Employee>>) { es.get(0).id.toString() }\n",
+            ),
+            (
+                "java-member-after-entity",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Holder { Integer getId() { return 1; } } "
+                "class Use { void use(List<Employee> es) { "
+                "es.get(0).getOther().getId(); } }\n",
+            ),
+            (
+                "kotlin-member-after-entity",
+                "kt",
+                "package example.entity\n"
+                "class Holder(var id: Int)\n"
+                "fun use(es: List<Employee>) { es[0].other.id.toString() }\n",
+            ),
+            (
+                "java-same-name-nested-generic-shadow",
+                "java",
+                "package example.entity; import java.util.List; "
+                "class Box<T> { void setId(Integer id) {} } "
+                "class Use { void boxList(List<Box<Employee>> es) { "
+                "es.get(0).setId(1); } "
+                "void entityList(List<Employee> es) { es.size(); } }\n",
+            ),
+            (
+                "kotlin-same-name-nested-generic-shadow",
+                "kt",
+                "package example.entity\n"
+                "class Box<T>(var id: Int)\n"
+                "fun boxList(es: List<Box<Employee>>) { es[0].id.toString() }\n"
+                "fun entityList(es: List<Employee>) { es.size.toString() }\n",
+            ),
+        )
+        for label, suffix, probe in unrelated_cases:
+            with self.subTest(receiver=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Long", annotations=("@Id",),
+                        doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                project.existing_file(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Integer", annotations=("@Id",),
+                        doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Integer"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                reference_root = (
+                    project.existing if suffix == "java"
+                    else project.root / "src/main/kotlin"
+                )
+                reference = reference_root / f"example/entity/Use.{suffix}"
+                reference.parent.mkdir(parents=True, exist_ok=True)
+                reference.write_text(probe, encoding="utf-8")
+                roots = (
+                    (project.existing,)
+                    if suffix == "java"
+                    else (project.existing, reference_root)
+                )
+
+                plan = build_plan(
+                    project.root, project.snapshot, project.generated, roots, "java"
+                )
+                finding = next(
+                    item for item in plan.findings
+                    if item.kind in {"widen-basic-type", "narrow-basic-type"}
+                )
+                self.assertEqual("SAFE", finding.status)
+                self.assertTrue(finding.edits)
+
     def test_java_record_lombok_and_version_inference_are_blocked(self) -> None:
         project = ProjectFixture(self)
         project.generated_file()
@@ -2474,6 +2753,61 @@ class EntityMergeTests(unittest.TestCase):
         with self.assertRaises(UnsafeProjectError):
             apply_plan(project.root, plan, approvals=())
         self.assertEqual(before, target.read_bytes())
+
+    def test_untracked_and_ignored_existing_entity_targets_block_apply(self) -> None:
+        for state in ("untracked", "ignored"):
+            with self.subTest(state=state):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", annotations=("@Id",),
+                        doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id"), imports=("org.seasar.doma.Id",),
+                ))
+                target = project.existing_file(java_entity(
+                    fields=java_field("id", "employee_id"),
+                    methods=java_accessors("id"),
+                ))
+                if state == "ignored":
+                    (project.root / ".gitignore").write_text(
+                        "/src/main/java/example/entity/Employee.java\n",
+                        encoding="utf-8",
+                    )
+                plan = project.plan(language="java")
+                subprocess.run(["git", "init", "-q"], cwd=project.root, check=True)
+                subprocess.run(
+                    ["git", "config", "user.name", "Fixture"],
+                    cwd=project.root,
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "config", "user.email", "fixture@example.invalid"],
+                    cwd=project.root,
+                    check=True,
+                )
+                subprocess.run(["git", "add", "."], cwd=project.root, check=True)
+                if state == "untracked":
+                    subprocess.run(
+                        ["git", "reset", "--quiet", "--", str(target.relative_to(project.root))],
+                        cwd=project.root,
+                        check=True,
+                    )
+                subprocess.run(
+                    ["git", "commit", "-qm", "fixture"], cwd=project.root, check=True
+                )
+                before = target.read_bytes()
+
+                with self.assertRaises(UnsafeProjectError):
+                    apply_plan(project.root, plan, approvals=())
+                self.assertEqual(before, target.read_bytes())
 
     def test_auto_language_plan_replays_the_exact_mixed_language_plan(self) -> None:
         project = ProjectFixture(self)

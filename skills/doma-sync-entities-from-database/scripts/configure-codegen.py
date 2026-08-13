@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
@@ -256,6 +257,24 @@ def _assert_supported_prerequisites(spec: BuildSpec, source: str) -> None:
         raise SafetyError("Java 17+ is required by Doma CodeGen")
 
 
+def _kotlin_string(value: str) -> str:
+    escaped = json.dumps(value, ensure_ascii=False)[1:-1].replace("$", "\\$")
+    return '"' + escaped + '"'
+
+
+def _groovy_string(value: str) -> str:
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("\b", "\\b")
+        .replace("\f", "\\f")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return "'" + escaped + "'"
+
+
 def _kotlin_managed(spec: BuildSpec, metamodel: bool) -> str:
     database_property = "schemaName" if spec.database == "postgresql" else "catalogName"
     database_value = spec.schema if spec.database == "postgresql" else spec.catalog
@@ -284,9 +303,9 @@ if (gradle.startParameter.taskNames.any {{ it.substringAfterLast(":").startsWith
             sourceDir.set(layout.projectDirectory.dir("build/doma-codegen/generated"))
             languageType.set(org.seasar.doma.gradle.codegen.desc.LanguageType.{language})
             entity {{
-                packageName.set("{spec.entity_package}")
-                {database_property}.set("{database_value}")
-                tableNamePattern.set("{spec.table_pattern}")
+                packageName.set({_kotlin_string(spec.entity_package)})
+                {database_property}.set({_kotlin_string(database_value or "")})
+                tableNamePattern.set({_kotlin_string(spec.table_pattern)})
                 showCatalogName.set({str(spec.database == "mysql").lower()})
                 showSchemaName.set({str(spec.database == "postgresql").lower()})
                 showTableName.set(true)
@@ -331,9 +350,9 @@ if (gradle.startParameter.taskNames.any {{ it.tokenize(':').last().startsWith('d
             sourceDir.set(layout.projectDirectory.dir('build/doma-codegen/generated'))
             languageType.set(org.seasar.doma.gradle.codegen.desc.LanguageType.{language})
             entity {{
-                packageName.set('{spec.entity_package}')
-                {database_property}.set('{database_value}')
-                tableNamePattern.set('{spec.table_pattern}')
+                packageName.set({_groovy_string(spec.entity_package)})
+                {database_property}.set({_groovy_string(database_value or "")})
+                tableNamePattern.set({_groovy_string(spec.table_pattern)})
                 showCatalogName.set({str(spec.database == "mysql").lower()})
                 showSchemaName.set({str(spec.database == "postgresql").lower()})
                 showTableName.set(true)
@@ -356,8 +375,8 @@ def _plugin_line(spec: BuildSpec) -> str:
 
 def _plugin_declaration(spec: BuildSpec) -> str:
     if spec.dsl == "kotlin":
-        return f'id("org.domaframework.doma.codegen") version "{spec.codegen_version}"'
-    return f"id 'org.domaframework.doma.codegen' version '{spec.codegen_version}'"
+        return f'id("org.domaframework.doma.codegen") version {_kotlin_string(spec.codegen_version)}'
+    return f"id 'org.domaframework.doma.codegen' version {_groovy_string(spec.codegen_version)}"
 
 
 def _driver_line(spec: BuildSpec) -> str:
@@ -366,8 +385,8 @@ def _driver_line(spec: BuildSpec) -> str:
 
 def _driver_declaration(spec: BuildSpec) -> str:
     if spec.dsl == "kotlin":
-        return f'domaCodeGen("{spec.driver_coordinate}")'
-    return f"domaCodeGen '{spec.driver_coordinate}'"
+        return f'domaCodeGen({_kotlin_string(spec.driver_coordinate)})'
+    return f"domaCodeGen {_groovy_string(spec.driver_coordinate)}"
 
 
 def _add_to_block(source: str, span: BuildSpan | None, name: str, line: str) -> TextEdit:
@@ -501,12 +520,16 @@ def _plan_for(spec: BuildSpec, metamodel: bool) -> ConfigurationPlan:
     mutations: tuple[FileMutation, ...] = ()
     if after != source:
         mutations = (FileMutation(spec.build_file.name, sha256(source), sha256(after), edits),)
-    return ConfigurationPlan(1, ".", {
+    return ConfigurationPlan(1, ".", _request_inputs(spec, metamodel), mutations)
+
+
+def _request_inputs(spec: BuildSpec, metamodel: bool) -> dict[str, str | None]:
+    return {
         "language": spec.language, "database": spec.database, "entity_package": spec.entity_package,
         "schema": spec.schema, "catalog": spec.catalog, "table_pattern": spec.table_pattern,
         "codegen_version": spec.codegen_version, "driver_coordinate": spec.driver_coordinate,
         "metamodel": str(metamodel).lower(),
-    }, mutations)
+    }
 
 
 def _plan_json(plan: ConfigurationPlan) -> str:
@@ -532,21 +555,34 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_apply(args: argparse.Namespace) -> int:
-    root = Path(args.project_root).resolve()
-    if not root.is_dir():
-        raise ValueError("project root must be a directory")
+    spec = _spec_from_args(args)
+    root = spec.project_root
+    metamodel = args.metamodel == "true"
     plan_path = _safe_child(root, Path(args.plan) if Path(args.plan).is_absolute() else root / args.plan)
     data = json.loads(_read_text(plan_path))
     if data.get("format_version") != 1 or data.get("project_root") != ".":
         raise ValueError("unsupported configuration plan")
+    if data.get("inputs") != _request_inputs(spec, metamodel):
+        raise ValueError("configuration plan inputs do not match the apply request")
+    mutations = data.get("mutations")
+    if not isinstance(mutations, list) or len(mutations) > 1:
+        raise ValueError("configuration plan mutations are invalid")
+    if mutations and mutations[0].get("path") != spec.build_file.name:
+        raise ValueError("configuration plan does not target the selected build file")
+    _assert_git_target_clean(spec)
+    if mutations and sha256(_read_text(spec.build_file)) != mutations[0].get("before_sha256"):
+        return EXIT_STALE
+    expected = _plan_for(spec, metamodel)
+    if data != json.loads(_plan_json(expected)):
+        raise ValueError("configuration plan does not match the canonical proposal")
     pending: list[tuple[Path, str]] = []
-    for mutation in data.get("mutations", []):
-        path = _safe_child(root, root / mutation["path"])
-        if path.is_symlink() or not path.is_file() or sha256(_read_text(path)) != mutation["before_sha256"]:
+    for mutation in expected.mutations:
+        path = _safe_child(root, root / mutation.path)
+        if path.is_symlink() or not path.is_file() or sha256(_read_text(path)) != mutation.before_sha256:
             return EXIT_STALE
-        edits = tuple(TextEdit(**edit) for edit in mutation["edits"])
+        edits = mutation.edits
         updated = _apply_edits(_read_text(path), edits)
-        if sha256(updated) != mutation["after_sha256"]:
+        if sha256(updated) != mutation.after_sha256:
             raise ValueError("plan replacement hash is invalid")
         pending.append((path, updated))
     for path, updated in pending:
@@ -554,25 +590,63 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _assert_git_target_clean(spec: BuildSpec) -> None:
+    try:
+        inside = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=spec.project_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", spec.build_file.name],
+            cwd=spec.project_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        status = subprocess.run(
+            [
+                "git", "status", "--porcelain=v1", "--untracked-files=all", "--",
+                spec.build_file.name,
+            ],
+            cwd=spec.project_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exception:
+        raise SafetyError("Git status could not be verified") from exception
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        raise SafetyError("project root is not a Git worktree")
+    if tracked.returncode != 0 or status.returncode != 0 or status.stdout:
+        raise SafetyError("selected build file is not clean and tracked")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     plan = commands.add_parser("plan")
-    plan.add_argument("--project-root", required=True)
-    plan.add_argument("--language", choices=("java", "kotlin"), required=True)
-    plan.add_argument("--database", choices=("postgresql", "mysql"), required=True)
-    plan.add_argument("--entity-package", required=True)
-    plan.add_argument("--schema")
-    plan.add_argument("--catalog")
-    plan.add_argument("--table-pattern", required=True)
-    plan.add_argument("--codegen-version", required=True)
-    plan.add_argument("--driver-coordinate", required=True)
-    plan.add_argument("--metamodel", choices=("true", "false"), required=True)
+    _add_request_arguments(plan)
     plan.add_argument("--output-plan", required=True)
     apply = commands.add_parser("apply")
-    apply.add_argument("--project-root", required=True)
+    _add_request_arguments(apply)
     apply.add_argument("--plan", required=True)
     return parser
+
+
+def _add_request_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project-root", required=True)
+    parser.add_argument("--language", choices=("java", "kotlin"), required=True)
+    parser.add_argument("--database", choices=("postgresql", "mysql"), required=True)
+    parser.add_argument("--entity-package", required=True)
+    parser.add_argument("--schema")
+    parser.add_argument("--catalog")
+    parser.add_argument("--table-pattern", required=True)
+    parser.add_argument("--codegen-version", required=True)
+    parser.add_argument("--driver-coordinate", required=True)
+    parser.add_argument("--metamodel", choices=("true", "false"), required=True)
 
 
 def main() -> int:
