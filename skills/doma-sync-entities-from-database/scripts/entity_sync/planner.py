@@ -546,6 +546,12 @@ def _compare_entity(
     for new_prop in added:
         if new_prop.column not in db_columns:
             continue
+        candidate_mismatch = _existing_addition_candidate_mismatch(
+            table, candidate, new_prop, path, database_base
+        )
+        if candidate_mismatch is not None:
+            findings.append(candidate_mismatch)
+            continue
         edits = _add_property_edits(existing, candidate, new_prop, matches)
         findings.append(_make_finding(
             "SAFE", "add-property", path, table.identity, new_prop.column,
@@ -751,6 +757,102 @@ def _compare_entity(
                 (doc_edit[0],),
             ))
     return tuple(findings)
+
+
+def _existing_addition_candidate_mismatch(
+    table: _Table,
+    candidate: _ParsedFile,
+    prop: PropertyModel,
+    existing_path: str,
+    database_base: dict[str, object],
+) -> Finding | None:
+    """Reject an inserted candidate member that the snapshot cannot prove.
+
+    Existing Entity synchronization can safely add a property only when the
+    candidate carries the same basic physical mapping CodeGen would derive for
+    the snapshot.  This mirrors the new-Entity gate without asserting that the
+    whole existing source is generated-only.
+    """
+    column = next(
+        (item for item in table.columns if item.get("name") == prop.column), None
+    )
+    if column is None:
+        return _make_finding(
+            "BLOCKED", "generated-column-mismatch", existing_path, table.identity,
+            prop.column, database_base, None, _property_excerpt(candidate.parsed.source, prop),
+            "The generated property has no exact physical column in the snapshot.",
+            "Regenerate candidates from the authoritative snapshot.", (),
+        )
+    expected_type = _expected_basic_type(table, column, candidate.parsed.entity.language)
+    context = {
+        **database_base,
+        "column": column,
+        "generated_path": candidate.file.path,
+    }
+    if expected_type is None or prop.type_name != expected_type:
+        return _make_finding(
+            "BLOCKED", "generated-type-mismatch", existing_path, table.identity,
+            prop.column, {**context, "expected_type": expected_type}, None,
+            _property_excerpt(candidate.parsed.source, prop),
+            "The candidate basic type is not the proven CodeGen type for the JDBC metadata.",
+            "Regenerate the candidate; do not insert an inferred application type.", (),
+        )
+    for qualified, kind in (
+        ("org.seasar.doma.Version", "version-semantics"),
+        ("org.seasar.doma.TenantId", "tenant-id-semantics"),
+    ):
+        if _annotation(prop, qualified) is not None:
+            return _make_finding(
+                "BLOCKED", kind, existing_path, table.identity, prop.column,
+                context, None, _property_excerpt(candidate.parsed.source, prop),
+                "Database metadata cannot prove this Doma application semantic.",
+                "Choose this special mapping manually.", (),
+            )
+    generated = _annotation(prop, "org.seasar.doma.GeneratedValue")
+    if generated is not None:
+        db_pk = tuple(str(item["column"]) for item in (table.primary_key or ()))
+        candidate_pk = tuple(
+            item.column for item in candidate.parsed.entity.properties
+            if _annotation(item, "org.seasar.doma.Id") is not None
+        )
+        generated_is_identity = (
+            dict(generated.arguments).get("strategy") == "GenerationType.IDENTITY"
+        )
+        expected_identity = (
+            column.get("auto_increment") is True
+            and len(db_pk) == 1
+            and candidate_pk == db_pk
+            and prop.column in candidate_pk
+        )
+        if not expected_identity or not generated_is_identity:
+            return _make_finding(
+                "BLOCKED", "generated-value-semantics", existing_path,
+                table.identity, prop.column, context, None,
+                _property_excerpt(candidate.parsed.source, prop),
+                "The candidate @GeneratedValue does not exactly match auto-increment metadata.",
+                "Regenerate the candidate and confirm the generation strategy.", (),
+            )
+    if candidate.parsed.entity.language == "kotlin":
+        expected_nullable, expected_default = _expected_kotlin_property_shape(
+            column, expected_type
+        )
+        if prop.nullable is not expected_nullable:
+            return _make_finding(
+                "BLOCKED", "generated-nullability-mismatch", existing_path,
+                table.identity, prop.column, context, None,
+                _property_excerpt(candidate.parsed.source, prop),
+                "The candidate Kotlin nullability is not the proven CodeGen resolver output.",
+                "Regenerate the candidate from the authoritative snapshot.", (),
+            )
+        if _kotlin_property_initializer(candidate, prop) != expected_default:
+            return _make_finding(
+                "BLOCKED", "generated-default-mismatch", existing_path,
+                table.identity, prop.column, context, None,
+                _property_excerpt(candidate.parsed.source, prop),
+                "The candidate Kotlin initializer is not the proven CodeGen resolver default.",
+                "Regenerate the candidate from the authoritative snapshot.", (),
+            )
+    return None
 
 
 def _new_entity_finding(
@@ -2592,16 +2694,66 @@ def _has_kotlin_receiver_scope_reference(
             if body_end is None:
                 continue
         else:
-            line_end = item.source.find("\n", tokens[body_start].span.end)
-            if line_end < 0:
-                line_end = len(item.source)
-            body_end = next((
-                cursor for cursor in range(body_start + 1, len(tokens))
-                if tokens[cursor].span.start >= line_end
-            ), len(tokens))
+            body_end = _kotlin_expression_body_end(
+                item.source, tokens, index, body_start
+            )
         if _range_has_receiver_member(tokens, body_start + 1, body_end, member_names):
             return True
     return False
+
+
+def _kotlin_expression_body_end(
+    source: str,
+    tokens: Sequence[Token],
+    function_start: int,
+    expression_start: int,
+) -> int:
+    """Return the token boundary for an expression-bodied Kotlin function.
+
+    Kotlin permits the expression to start on a continuation line after `=`.
+    Stop only at a following declaration at the function's brace and
+    indentation level.  In uncertain source, scanning farther is deliberate:
+    reference detection must fail closed rather than offer a destructive edit.
+    """
+    function_indent = _line_indent(source, tokens[function_start].span.start)
+    baseline_depth = _brace_depth_at(tokens, function_start)
+    for cursor in range(expression_start + 1, len(tokens)):
+        if _brace_depth_at(tokens, cursor) != baseline_depth:
+            continue
+        if _line_indent(source, tokens[cursor].span.start) > function_indent:
+            continue
+        if _kotlin_declaration_starts_at(tokens, cursor):
+            return cursor
+    return len(tokens)
+
+
+def _line_indent(source: str, offset: int) -> int:
+    line_start = source.rfind("\n", 0, offset) + 1
+    prefix = source[line_start:offset]
+    return len(prefix) if prefix.strip(" \t") == "" else len(prefix)
+
+
+def _brace_depth_at(tokens: Sequence[Token], end: int) -> int:
+    depth = 0
+    for token in tokens[:end]:
+        if token.text == "{":
+            depth += 1
+        elif token.text == "}":
+            depth -= 1
+    return depth
+
+
+def _kotlin_declaration_starts_at(tokens: Sequence[Token], index: int) -> bool:
+    token = _identifier(tokens[index])
+    if token in {"class", "interface", "object", "fun", "typealias", "val", "var"}:
+        return True
+    if tokens[index].text == "@":
+        return True
+    return token in {
+        "public", "private", "protected", "internal", "open", "abstract", "final",
+        "override", "suspend", "inline", "tailrec", "operator", "infix", "external",
+        "expect", "actual", "data", "sealed", "enum", "annotation", "value",
+    }
 
 
 def _is_widening(old: str, new: str) -> bool:

@@ -1036,6 +1036,92 @@ class EntityMergeTests(unittest.TestCase):
         self.assertIn("/** Display name */", merged)
         self.assertIn("Long version;", merged)
 
+    def test_existing_entity_add_property_requires_a_snapshot_proven_candidate_type(self) -> None:
+        project = ProjectFixture(self)
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        existing = java_entity(
+            fields=(
+                java_field("id", "employee_id", annotations=("@Id",))
+                + java_field("version", "version")
+            ),
+            methods=java_accessors("id") + java_accessors("version"),
+            imports=("org.seasar.doma.Id",),
+        )
+        project.existing_file(existing)
+
+        wrong_type = java_entity(
+            fields=(
+                java_field("id", "employee_id", annotations=("@Id",), doc="/** Employee ID */")
+                + java_field("displayName", "display_name", "LocalDate", doc="/** Display name */")
+                + java_field("version", "version")
+            ),
+            methods=(
+                java_accessors("id")
+                + java_accessors("displayName", "LocalDate")
+                + java_accessors("version")
+            ),
+            imports=("java.time.LocalDate", "org.seasar.doma.Id"),
+        )
+        project.generated_file().write_text(wrong_type)
+
+        plan = project.plan()
+        mismatch = next(item for item in plan.findings if item.kind == "generated-type-mismatch")
+        self.assertEqual("BLOCKED", mismatch.status)
+        self.assertFalse(mismatch.edits)
+        self.assertFalse(any(
+            item.kind == "add-property" and item.status == "SAFE" and item.edits
+            for item in plan.findings
+        ))
+
+        valid_type = wrong_type.replace("LocalDate", "String")
+        project.generated_file().write_text(valid_type)
+        valid_plan = project.plan()
+        addition = next(item for item in valid_plan.findings if item.kind == "add-property")
+        self.assertEqual("SAFE", addition.status)
+        self.assertTrue(addition.edits)
+
+    def test_existing_entity_add_property_rejects_unproven_special_mapping(self) -> None:
+        project = ProjectFixture(self)
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.existing_file(java_entity(
+            fields=(
+                java_field("id", "employee_id", annotations=("@Id",))
+                + java_field("version", "version")
+            ),
+            methods=java_accessors("id") + java_accessors("version"),
+            imports=("org.seasar.doma.Id",),
+        ))
+        candidate = java_entity(
+            fields=(
+                java_field("id", "employee_id", annotations=("@Id",), doc="/** Employee ID */")
+                + java_field(
+                    "displayName", "display_name", "String",
+                    annotations=("@Version",), doc="/** Display name */",
+                )
+                + java_field("version", "version")
+            ),
+            methods=(
+                java_accessors("id")
+                + java_accessors("displayName", "String")
+                + java_accessors("version")
+            ),
+            imports=("org.seasar.doma.Id", "org.seasar.doma.Version"),
+        )
+        project.generated_file().write_text(candidate)
+
+        plan = project.plan()
+        version = next(item for item in plan.findings if item.kind == "version-semantics")
+        self.assertEqual("BLOCKED", version.status)
+        self.assertFalse(version.edits)
+        self.assertFalse(any(
+            item.kind == "add-property" and item.status == "SAFE" and item.edits
+            for item in plan.findings
+        ))
+
     def test_database_comment_must_match_snapshot_remarks_before_it_is_applied(self) -> None:
         project = ProjectFixture(self)
         project.retain_snapshot_columns("employee_id")
@@ -1884,6 +1970,16 @@ class EntityMergeTests(unittest.TestCase):
                 "extension-receiver",
                 {"probe/Use.kt": (
                     "package example.entity\nfun Employee.use() = legacy\n"
+                )},
+                "legacy",
+                "BLOCKED",
+            ),
+            (
+                "multiline-extension-receiver",
+                {"probe/Use.kt": (
+                    "package example.entity\n"
+                    "fun Employee.use() =\n"
+                    "    legacy\n"
                 )},
                 "legacy",
                 "BLOCKED",
