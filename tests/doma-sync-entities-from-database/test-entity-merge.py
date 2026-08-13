@@ -2891,6 +2891,13 @@ class EntityMergeTests(unittest.TestCase):
                 "return value.unwrap().getId(); } }\n",
             ),
             (
+                "java-generic-factory-wrapper",
+                "src/main/java/probe/Use.java",
+                "package probe; import java.util.Optional; import example.entity.Employee; "
+                "class Use { Optional<Employee> load() { return Optional.empty(); } "
+                "Integer use() { return load().orElseThrow().getId(); } }\n",
+            ),
+            (
                 "java-fqcn-variable",
                 "src/main/java/probe/Use.java",
                 "package probe; class Use { Integer f(example.entity.Employee value) { "
@@ -2952,6 +2959,14 @@ class EntityMergeTests(unittest.TestCase):
                 "package probe\nimport example.entity.Employee\n"
                 "class Box<T>(val value: T)\n"
                 "fun use(box: Box<Employee>): Int = box.value.id\n",
+            ),
+            (
+                "kotlin-generic-typealias-wrapper",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee\n"
+                "class Box<T>(val value: T)\n"
+                "typealias StaffBox = Box<Employee>\n"
+                "fun use(box: StaffBox): Int = box.value.id\n",
             ),
             (
                 "kotlin-nullable-entity",
@@ -3021,6 +3036,56 @@ class EntityMergeTests(unittest.TestCase):
                 result = apply_plan(project.root, plan, approvals=())
                 self.assertEqual("BLOCKED", result.state)
                 self.assertEqual(before, target.read_bytes())
+
+    def test_imported_direct_generic_kotlin_typealias_blocks_type_change(self) -> None:
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(
+            json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ), encoding="utf-8")
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        source_root = project.root / "src/main/kotlin/probe"
+        source_root.mkdir(parents=True, exist_ok=True)
+        (source_root / "Alias.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias StaffBox = probe.Box<Employee>\n",
+            encoding="utf-8",
+        )
+        consumer_root = project.root / "src/main/kotlin/consumer"
+        consumer_root.mkdir(parents=True, exist_ok=True)
+        (consumer_root / "Use.kt").write_text(
+            "package consumer\nimport probe.StaffBox as Staff\n"
+            "fun use(box: Staff): Int = box.value.id\n",
+            encoding="utf-8",
+        )
+
+        plan = build_plan(
+            project.root, project.snapshot, project.generated,
+            (project.existing, project.root / "src/main/kotlin"), "java",
+        )
+        finding = next(
+            item for item in plan.findings
+            if item.kind in {"widen-basic-type", "narrow-basic-type"}
+        )
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan, approvals=()).state)
+        self.assertEqual(before, target.read_bytes())
 
     def test_java_record_lombok_and_version_inference_are_blocked(self) -> None:
         project = ProjectFixture(self)

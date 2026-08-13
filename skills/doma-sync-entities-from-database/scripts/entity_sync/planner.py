@@ -171,6 +171,7 @@ class _CodeGenNaming:
 class _CollectionSymbols:
     variables: tuple[tuple[str, int, int, bool, bool], ...]
     factories: frozenset[str]
+    wrapper_factories: frozenset[str]
 
     def names_at(self, position: int) -> frozenset[str]:
         latest: dict[str, tuple[int, bool, bool]] = {}
@@ -1964,16 +1965,17 @@ def _has_external_reference(
         accessor_names.update({prop.name, "set" + prop.name[2:]})
     member_names = accessor_names | {prop.name}
     factory_keys = _entity_factory_keys(files, entity)
+    typealias_keys = _entity_wrapper_typealias_keys(files, entity)
     for item in files:
         if item.path == target_path:
             continue
         tokens = _code_tokens(item)
         if _has_typed_member_reference(
-            item, tokens, entity, member_names, factory_keys
+            item, tokens, entity, member_names, factory_keys, typealias_keys
         ):
             return True
         if item.language == "kotlin" and _has_kotlin_receiver_scope_reference(
-            item, tokens, entity, member_names, factory_keys
+            item, tokens, entity, member_names, factory_keys, typealias_keys
         ):
             return True
     return False
@@ -2172,9 +2174,12 @@ def _typed_entity_variables(
     tokens: Sequence[Token],
     entity: EntityModel,
     factory_keys: frozenset[tuple[str, str]],
+    typealias_keys: frozenset[tuple[str, str, bool]],
 ) -> frozenset[str]:
     result: set[str] = set()
-    collection_symbols = _entity_collection_symbols(item, tokens, entity)
+    collection_symbols = _entity_collection_symbols(
+        item, tokens, entity, typealias_keys
+    )
     type_names = _entity_type_names(item, entity)
     if _file_resolves_entity(item, entity) and item.language == "kotlin":
         for index in range(1, len(tokens) - 1):
@@ -2211,6 +2216,7 @@ def _typed_entity_variables(
             if _entity_expression_after(
                 item, tokens, index + 1, entity, frozenset(result),
                 collection_symbols.names_at(index), collection_symbols.factories,
+                collection_symbols.wrapper_factories,
                 factory_keys,
             ):
                 result.add(target)
@@ -2222,11 +2228,33 @@ def _entity_collection_symbols(
     item: _SourceFile,
     tokens: Sequence[Token],
     entity: EntityModel,
+    typealias_keys: frozenset[tuple[str, str, bool]] = frozenset(),
 ) -> _CollectionSymbols:
-    if not _file_resolves_entity(item, entity):
-        return _CollectionSymbols((), frozenset())
+    imported_typealiases = _available_entity_wrapper_typealiases(item, typealias_keys)
+    if not _file_resolves_entity(item, entity) and not imported_typealiases:
+        return _CollectionSymbols((), frozenset(), frozenset())
     declarations: list[tuple[str, int, int, bool, bool]] = []
     factories: set[str] = set()
+    wrapper_factories: set[str] = set()
+    typealias_wrappers = {
+        **imported_typealiases,
+        **_direct_generic_entity_typealiases(item, tokens, entity),
+    }
+    if item.language == "kotlin":
+        for index, token in enumerate(tokens):
+            typealias_name = _identifier(token)
+            if (
+                typealias_name in typealias_wrappers
+                and index >= 2
+                and tokens[index - 1].text == ":"
+            ):
+                variable = _identifier(tokens[index - 2])
+                if variable:
+                    declarations.append((
+                        variable, index - 2,
+                        _binding_scope_end(tokens, index - 2), True,
+                        typealias_wrappers[typealias_name],
+                    ))
     for index in range(len(tokens) - 3):
         if tokens[index + 1].text != "<":
             continue
@@ -2247,6 +2275,8 @@ def _entity_collection_symbols(
                     name = _identifier(tokens[open_index - 1])
                     if name:
                         factories.add(name)
+                        if wrapper:
+                            wrapper_factories.add(name)
             elif index >= 2 and tokens[index - 1].text == ":":
                 variable = _identifier(tokens[index - 2])
                 if variable:
@@ -2261,6 +2291,8 @@ def _entity_collection_symbols(
                 if close + 2 < len(tokens) and tokens[close + 2].text == "(":
                     if direct:
                         factories.add(name)
+                        if wrapper:
+                            wrapper_factories.add(name)
                 else:
                     variable_index = close + 1
                     declarations.append((
@@ -2298,7 +2330,95 @@ def _entity_collection_symbols(
     return _CollectionSymbols(
         tuple(sorted(set(bindings), key=lambda item: item[1])),
         frozenset(factories),
+        frozenset(wrapper_factories),
     )
+
+
+def _direct_generic_entity_typealiases(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    entity: EntityModel,
+) -> dict[str, bool]:
+    """Return local Kotlin aliases whose direct generic argument is this Entity.
+
+    A direct alias such as ``typealias StaffBox = Box<Employee>`` carries the
+    same receiver safety information as its expanded type.  We intentionally
+    do not follow aliases through other files: only a declaration visible in
+    this source (including an imported Entity name) is syntactically proven.
+    Nested arguments remain excluded, so ``List<Box<Employee>>`` does not
+    become an Entity receiver merely because it mentions the Entity.
+    """
+    if item.language != "kotlin" or not _file_resolves_entity(item, entity):
+        return {}
+    aliases: dict[str, bool] = {}
+    for index in range(len(tokens) - 4):
+        if _identifier(tokens[index]) != "typealias":
+            continue
+        alias = _identifier(tokens[index + 1])
+        if not alias or tokens[index + 2].text != "=":
+            continue
+        type_cursor = index + 3
+        type_name = _identifier(tokens[type_cursor])
+        if not type_name:
+            continue
+        while (
+            type_cursor + 2 < len(tokens)
+            and tokens[type_cursor + 1].text == "."
+            and _identifier(tokens[type_cursor + 2])
+        ):
+            type_cursor += 2
+            type_name = _identifier(tokens[type_cursor])
+        if type_cursor + 1 >= len(tokens) or tokens[type_cursor + 1].text != "<":
+            continue
+        close = _matching_token(tokens, type_cursor + 1, "<", ">")
+        if close is None:
+            continue
+        if _direct_entity_type_argument(item, tokens, type_cursor + 2, close, entity):
+            aliases[alias] = type_name not in _ENTITY_COLLECTION_TYPES
+    return aliases
+
+
+def _entity_wrapper_typealias_keys(
+    files: Sequence[_SourceFile], entity: EntityModel
+) -> frozenset[tuple[str, str, bool]]:
+    """Return project-local, direct Entity generic Kotlin aliases by FQ name."""
+    result: set[tuple[str, str, bool]] = set()
+    for item in files:
+        if item.language != "kotlin":
+            continue
+        for alias, wrapper in _direct_generic_entity_typealiases(
+            item, _code_tokens(item), entity
+        ).items():
+            result.add((_source_package(item), alias, wrapper))
+    return frozenset(result)
+
+
+def _available_entity_wrapper_typealiases(
+    item: _SourceFile,
+    aliases: frozenset[tuple[str, str, bool]],
+) -> dict[str, bool]:
+    """Resolve direct project-local generic aliases visible to one Kotlin file."""
+    if item.language != "kotlin":
+        return {}
+    imports = _source_imports(item)
+    imported_as = {
+        match.group(2): match.group(1)
+        for match in re.finditer(
+            r"(?m)^\s*import\s+"
+            r"([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)"
+            r"\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*$",
+            item.source,
+        )
+    }
+    available: dict[str, bool] = {}
+    for package_name, alias, wrapper in aliases:
+        fqcn = (package_name + "." if package_name else "") + alias
+        if _source_package(item) == package_name or fqcn in imports:
+            available[alias] = wrapper
+        for local_name, imported in imported_as.items():
+            if imported == fqcn:
+                available[local_name] = wrapper
+    return available
 
 
 def _collection_names_at(
@@ -2519,6 +2639,7 @@ def _entity_expression_after(
     variables: frozenset[str],
     collections: frozenset[str],
     collection_factories: frozenset[str],
+    wrapper_collection_factories: frozenset[str],
     factory_keys: frozenset[tuple[str, str]],
 ) -> bool:
     while start < len(tokens) and (
@@ -2532,7 +2653,8 @@ def _entity_expression_after(
     if name in variables:
         return True
     if _collection_chain_returns_entity(
-        tokens, start, collections, collection_factories, frozenset()
+        tokens, start, collections, collection_factories,
+        wrapper_collection_factories,
     ):
         return True
     parts: list[str] = []
@@ -2568,6 +2690,7 @@ def _entity_expression_before(
     variables: frozenset[str],
     collections: frozenset[str],
     collection_factories: frozenset[str],
+    wrapper_collection_factories: frozenset[str],
     factory_keys: frozenset[tuple[str, str]],
 ) -> bool:
     if end < 0:
@@ -2581,7 +2704,8 @@ def _entity_expression_before(
     start = _receiver_expression_start(tokens, end)
     if start is not None and _collection_chain_returns_entity(
         tokens, start, collections, collection_factories,
-        _entity_collection_symbols(item, tokens, entity).wrapper_names_at(end), end=end
+        wrapper_collection_factories,
+        end=end,
     ):
         return True
     if start is not None and _contains_entity_cast(
@@ -2775,9 +2899,14 @@ def _has_typed_member_reference(
     entity: EntityModel,
     member_names: set[str],
     factory_keys: frozenset[tuple[str, str]],
+    typealias_keys: frozenset[tuple[str, str, bool]],
 ) -> bool:
-    variables = _typed_entity_variables(item, tokens, entity, factory_keys)
-    collection_symbols = _entity_collection_symbols(item, tokens, entity)
+    variables = _typed_entity_variables(
+        item, tokens, entity, factory_keys, typealias_keys
+    )
+    collection_symbols = _entity_collection_symbols(
+        item, tokens, entity, typealias_keys
+    )
     for index, token in enumerate(tokens):
         member = _identifier(token)
         if member not in member_names:
@@ -2787,7 +2916,10 @@ def _has_typed_member_reference(
             if _entity_expression_before(
                 item, tokens, receiver_end, entity, variables,
                 collection_symbols.names_at(receiver_end),
-                collection_symbols.factories, factory_keys,
+                collection_symbols.factories,
+                collection_symbols.wrapper_names_at(receiver_end)
+                | collection_symbols.wrapper_factories,
+                factory_keys,
             ):
                 return True
         if index >= 3 and tokens[index - 1].text == ":" and tokens[index - 2].text == ":":
@@ -2873,9 +3005,14 @@ def _has_kotlin_receiver_scope_reference(
     entity: EntityModel,
     member_names: set[str],
     factory_keys: frozenset[tuple[str, str]],
+    typealias_keys: frozenset[tuple[str, str, bool]],
 ) -> bool:
-    variables = _typed_entity_variables(item, tokens, entity, factory_keys)
-    collection_symbols = _entity_collection_symbols(item, tokens, entity)
+    variables = _typed_entity_variables(
+        item, tokens, entity, factory_keys, typealias_keys
+    )
+    collection_symbols = _entity_collection_symbols(
+        item, tokens, entity, typealias_keys
+    )
     for index, token in enumerate(tokens):
         scope_name = _identifier(token)
         if (
@@ -2887,7 +3024,10 @@ def _has_kotlin_receiver_scope_reference(
             if _entity_expression_before(
                 item, tokens, receiver_end, entity, variables,
                 collection_symbols.names_at(receiver_end),
-                collection_symbols.factories, factory_keys,
+                collection_symbols.factories,
+                collection_symbols.wrapper_names_at(receiver_end)
+                | collection_symbols.wrapper_factories,
+                factory_keys,
             ):
                 body_start = next((
                     cursor for cursor in range(
@@ -2919,7 +3059,10 @@ def _has_kotlin_receiver_scope_reference(
             if not _entity_expression_before(
                 item, tokens, close - 1, entity, variables,
                 collection_symbols.names_at(close - 1),
-                collection_symbols.factories, factory_keys,
+                collection_symbols.factories,
+                collection_symbols.wrapper_names_at(close - 1)
+                | collection_symbols.wrapper_factories,
+                factory_keys,
             ):
                 continue
             body_start = close + 1
