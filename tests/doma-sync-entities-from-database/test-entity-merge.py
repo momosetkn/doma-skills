@@ -872,6 +872,10 @@ class EntityMergeTests(unittest.TestCase):
                 table["columns"][0].update({
                     "nullable": None,
                     "auto_increment": False,
+                    "jdbc_type": -5,
+                    "type_name": "int8",
+                    "size": 64,
+                    "scale": 0,
                 })
                 project.snapshot.write_text(
                     json.dumps(snapshot, separators=(",", ":")) + "\n"
@@ -1016,6 +1020,10 @@ class EntityMergeTests(unittest.TestCase):
         project.generated_file().write_text(candidate)
         snapshot = json.loads(project.snapshot.read_text())
         snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        next(
+            column for column in snapshot["tables"][0]["columns"]
+            if column["name"] == "version"
+        ).update({"jdbc_type": -5, "type_name": "int8", "size": 64, "scale": 0})
         project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
         existing = java_entity(
             fields=(java_field("id", "employee_id", annotations=("@Id",)) + java_field("version", "version")),
@@ -1425,6 +1433,246 @@ class EntityMergeTests(unittest.TestCase):
         blocked = next(f for f in project.plan().findings if f.kind == "generated-value-semantics")
         self.assertEqual("BLOCKED", blocked.status)
         self.assertFalse(blocked.edits)
+
+    def test_existing_generated_value_requires_identity_on_the_exact_single_column_primary_key(self) -> None:
+        generated = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+        cases = (
+            (
+                "non-primary-key-auto-increment",
+                generated.replace(
+                    '    @Column(name = "display_name")\n',
+                    "    @GeneratedValue(strategy = GenerationType.IDENTITY)\n"
+                    '    @Column(name = "display_name")\n',
+                    1,
+                ),
+                "display_name",
+                lambda snapshot: next(
+                    column for column in snapshot["tables"][0]["columns"]
+                    if column["name"] == "display_name"
+                ).update({"auto_increment": True}),
+            ),
+            (
+                "primary-key-sequence",
+                generated.replace("GenerationType.IDENTITY", "GenerationType.SEQUENCE", 1),
+                "employee_id",
+                lambda snapshot: None,
+            ),
+            (
+                "primary-key-table",
+                generated.replace("GenerationType.IDENTITY", "GenerationType.TABLE", 1),
+                "employee_id",
+                lambda snapshot: None,
+            ),
+            (
+                "primary-key-unspecified",
+                generated.replace(
+                    "@GeneratedValue(strategy = GenerationType.IDENTITY)", "@GeneratedValue", 1
+                ),
+                "employee_id",
+                lambda snapshot: None,
+            ),
+        )
+        for label, candidate, column, mutate_snapshot in cases:
+            with self.subTest(case=label):
+                project = ProjectFixture(self)
+                snapshot = json.loads(project.snapshot.read_text())
+                mutate_snapshot(snapshot)
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                project.generated_file().write_text(candidate, encoding="utf-8")
+                existing = candidate.replace(
+                    "    @GeneratedValue(strategy = GenerationType.IDENTITY)\n"
+                    f'    @Column(name = "{column}")\n',
+                    f'    @Column(name = "{column}")\n',
+                    1,
+                ).replace(
+                    "    @GeneratedValue(strategy = GenerationType.SEQUENCE)\n"
+                    f'    @Column(name = "{column}")\n',
+                    f'    @Column(name = "{column}")\n',
+                    1,
+                ).replace(
+                    "    @GeneratedValue(strategy = GenerationType.TABLE)\n"
+                    f'    @Column(name = "{column}")\n',
+                    f'    @Column(name = "{column}")\n',
+                    1,
+                ).replace(
+                    "    @GeneratedValue\n"
+                    f'    @Column(name = "{column}")\n',
+                    f'    @Column(name = "{column}")\n',
+                    1,
+                )
+                if column == "employee_id":
+                    existing = existing.replace("import org.seasar.doma.GeneratedValue;\n", "").replace(
+                        "import org.seasar.doma.GenerationType;\n", ""
+                    )
+                target = project.existing_file(existing)
+
+                plan = project.plan()
+                finding = next(
+                    item for item in plan.findings
+                    if (
+                        item.kind in {"add-generated-value", "generated-value-semantics"}
+                        and item.column == column
+                    ) or (
+                        label == "primary-key-unspecified"
+                        and item.kind == "unsupported-source"
+                    )
+                )
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
+                project.commit()
+                before = target.read_bytes()
+                result = apply_plan(project.root, plan, approvals=())
+                self.assertEqual("BLOCKED", result.state)
+                self.assertEqual(before, target.read_bytes())
+
+    def test_existing_type_change_requires_candidate_type_proven_by_snapshot(self) -> None:
+        project = ProjectFixture(self)
+        candidate = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+        candidate = candidate.replace("String displayName", "Long displayName").replace(
+            "public String getDisplayName()", "public Long getDisplayName()"
+        ).replace("setDisplayName(String displayName)", "setDisplayName(Long displayName)")
+        existing = candidate.replace("Long displayName", "Integer displayName").replace(
+            "public Long getDisplayName()", "public Integer getDisplayName()"
+        ).replace("setDisplayName(Long displayName)", "setDisplayName(Integer displayName)")
+        project.generated_file().write_text(candidate, encoding="utf-8")
+        project.existing_file(existing)
+
+        plan = project.plan()
+        finding = next(
+            item for item in plan.findings
+            if item.column == "display_name"
+            and item.kind in {"widen-basic-type", "narrow-basic-type", "generated-type-mismatch"}
+        )
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+
+    def test_existing_snapshot_proven_basic_widening_remains_safe(self) -> None:
+        project = ProjectFixture(self)
+        snapshot = json.loads(project.snapshot.read_text())
+        display_name = next(
+            column for column in snapshot["tables"][0]["columns"]
+            if column["name"] == "display_name"
+        )
+        display_name.update({"jdbc_type": -5, "type_name": "int8", "size": 64, "scale": 0})
+        project.snapshot.write_text(
+            json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        candidate = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+        candidate = candidate.replace("String displayName", "Long displayName").replace(
+            "public String getDisplayName()", "public Long getDisplayName()"
+        ).replace("setDisplayName(String displayName)", "setDisplayName(Long displayName)")
+        existing = candidate.replace("Long displayName", "Integer displayName").replace(
+            "public Long getDisplayName()", "public Integer getDisplayName()"
+        ).replace("setDisplayName(Long displayName)", "setDisplayName(Integer displayName)")
+        project.generated_file().write_text(candidate, encoding="utf-8")
+        project.existing_file(existing)
+
+        finding = next(
+            item for item in project.plan().findings
+            if item.column == "display_name" and item.kind == "widen-basic-type"
+        )
+        self.assertEqual("SAFE", finding.status)
+        self.assertTrue(finding.edits)
+
+    def test_existing_addition_with_database_default_requires_manual_decision(self) -> None:
+        project = ProjectFixture(self)
+        snapshot = json.loads(project.snapshot.read_text())
+        next(
+            column for column in snapshot["tables"][0]["columns"]
+            if column["name"] == "display_name"
+        )["default"] = "ACTIVE"
+        project.snapshot.write_text(
+            json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        candidate = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+        project.generated_file().write_text(candidate, encoding="utf-8")
+        target = project.existing_file(candidate.replace(
+            java_field("displayName", "display_name", "String", doc="/** Display name */"), ""
+        ).replace(java_accessors("displayName", "String"), ""))
+
+        plan = project.plan()
+        finding = next(
+            item for item in plan.findings
+            if item.kind in {"add-property", "database-default-semantics"}
+            and item.column == "display_name"
+        )
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        self.assertIn("manual", finding.action.lower())
+        project.commit()
+        before = target.read_bytes()
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertEqual("BLOCKED", result.state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_localized_addition_with_handwritten_accessor_collision_is_blocked(self) -> None:
+        project = ProjectFixture(self)
+        candidate = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+        project.generated_file().write_text(candidate, encoding="utf-8")
+        existing = candidate.replace(
+            java_field("displayName", "display_name", "String", doc="/** Display name */"), ""
+        ).replace(java_accessors("displayName", "String"), "")
+        existing = existing.rsplit("}\n", 1)[0] + (
+            '    public String getDisplayName() { return "manual"; }\n}\n'
+        )
+        target = project.existing_file(existing)
+
+        plan = project.plan()
+        finding = next(
+            item for item in plan.findings if item.kind == "add-property"
+        )
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        project.commit()
+        before = target.read_bytes()
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertEqual("BLOCKED", result.state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_localized_kotlin_boolean_is_property_accessor_collision_is_blocked(self) -> None:
+        project = ProjectFixture(self)
+        project.existing = project.root / "src/main/kotlin"
+        project.existing.mkdir(parents=True)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["columns"].append({
+            "name": "is_active", "ordinal": 2, "jdbc_type": -7,
+            "type_name": "bool", "size": 1, "scale": 0, "nullable": True,
+            "default": None, "auto_increment": False, "remarks": "Active flag",
+        })
+        project.snapshot.write_text(
+            json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        candidate = kotlin_entity(properties=(
+            kotlin_property("employeeId", "employee_id", "Int", "-1", "/** Employee ID */")
+            + kotlin_property("isActive", "is_active", "Boolean?", "null", "/** Active flag */")
+        )).replace(
+            '@Column(name = "employee_id")',
+            '@org.seasar.doma.Id\n    @Column(name = "employee_id")',
+            1,
+        )
+        project.generated_file("kotlin").write_text(candidate, encoding="utf-8")
+        existing = kotlin_entity(properties=kotlin_property(
+            "employeeId", "employee_id", "Int", "-1", "/** Employee ID */"
+        )).replace(
+            '@Column(name = "employee_id")',
+            '@org.seasar.doma.Id\n    @Column(name = "employee_id")',
+            1,
+        ).replace("}\n", "    fun isActive(): Boolean? = null\n}\n", 1)
+        target = project.existing_file(existing, "kt")
+
+        plan = project.plan(language="kotlin")
+        finding = next(item for item in plan.findings if item.kind == "add-property")
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        project.commit()
+        before = target.read_bytes()
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertEqual("BLOCKED", result.state)
+        self.assertEqual(before, target.read_bytes())
 
     def test_identical_generated_value_semantics_do_not_depend_on_source_offsets(self) -> None:
         project = ProjectFixture(self)
@@ -2427,6 +2675,9 @@ class EntityMergeTests(unittest.TestCase):
                 project.retain_snapshot_columns("employee_id")
                 snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
                 snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                snapshot["tables"][0]["columns"][0].update({
+                    "jdbc_type": -5, "type_name": "int8", "size": 64, "scale": 0,
+                })
                 project.snapshot.write_text(
                     json.dumps(snapshot, separators=(",", ":")) + "\n",
                     encoding="utf-8",
@@ -2530,6 +2781,9 @@ class EntityMergeTests(unittest.TestCase):
                 project.retain_snapshot_columns("employee_id")
                 snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
                 snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                snapshot["tables"][0]["columns"][0].update({
+                    "jdbc_type": -5, "type_name": "int8", "size": 64, "scale": 0,
+                })
                 project.snapshot.write_text(
                     json.dumps(snapshot, separators=(",", ":")) + "\n",
                     encoding="utf-8",
@@ -2814,6 +3068,10 @@ class EntityMergeTests(unittest.TestCase):
         project.generated_file().write_text(candidate, encoding="utf-8")
         snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
         snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        next(
+            column for column in snapshot["tables"][0]["columns"]
+            if column["name"] == "version"
+        ).update({"jdbc_type": -5, "type_name": "int8", "size": 64, "scale": 0})
         project.snapshot.write_text(
             json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
         )

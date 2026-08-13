@@ -638,7 +638,11 @@ def _compare_entity(
         old_generated = old_annotations.get("org.seasar.doma.GeneratedValue")
         new_generated = new_annotations.get("org.seasar.doma.GeneratedValue")
         if not _annotation_equivalent(old_generated, new_generated):
-            if old_generated is None and new_generated is not None and column.get("auto_increment") is True:
+            if (
+                old_generated is None
+                and new_generated is not None
+                and _generated_value_is_proven_identity(table, candidate, new_prop)
+            ):
                 edits = _annotation_change_edits(
                     existing, candidate, old_prop, new_prop, old_generated, new_generated
                 )
@@ -686,6 +690,13 @@ def _compare_entity(
         nullability_changed = (
             old.language == "kotlin" and old_prop.nullable != new_prop.nullable
         )
+        if type_changed and _is_widening(old_prop.type_name, new_prop.type_name) and not blocked_use:
+            type_mismatch = _existing_type_change_candidate_mismatch(
+                table, candidate, new_prop, path, database_base
+            )
+            if type_mismatch is not None:
+                findings.append(type_mismatch)
+                continue
         if old.language == "kotlin" and type_changed and nullability_changed:
             status = "BLOCKED" if blocked_use else "REVIEW_REQUIRED"
             edits = () if blocked_use else _kotlin_property_declaration_edits(
@@ -759,6 +770,38 @@ def _compare_entity(
     return tuple(findings)
 
 
+def _existing_type_change_candidate_mismatch(
+    table: _Table,
+    candidate: _ParsedFile,
+    prop: PropertyModel,
+    existing_path: str,
+    database_base: dict[str, object],
+) -> Finding | None:
+    """Require an existing-property change candidate to match JDBC physical type."""
+    column = next(
+        (item for item in table.columns if item.get("name") == prop.column), None
+    )
+    expected_type = (
+        _expected_basic_type(table, column, candidate.parsed.entity.language)
+        if column is not None else None
+    )
+    if expected_type is not None and prop.type_name == expected_type:
+        return None
+    return _make_finding(
+        "BLOCKED", "generated-type-mismatch", existing_path, table.identity,
+        prop.column,
+        {
+            **database_base,
+            "column": column,
+            "expected_type": expected_type,
+            "generated_path": candidate.file.path,
+        },
+        None, _property_excerpt(candidate.parsed.source, prop),
+        "The changed property candidate is not the proven CodeGen type for the JDBC metadata.",
+        "Regenerate the candidate and make the application type decision manually.", (),
+    )
+
+
 def _existing_addition_candidate_mismatch(
     table: _Table,
     candidate: _ParsedFile,
@@ -797,6 +840,14 @@ def _existing_addition_candidate_mismatch(
             "The candidate basic type is not the proven CodeGen type for the JDBC metadata.",
             "Regenerate the candidate; do not insert an inferred application type.", (),
         )
+    if column.get("default") is not None:
+        return _make_finding(
+            "BLOCKED", "database-default-semantics", existing_path,
+            table.identity, prop.column, context, None,
+            _property_excerpt(candidate.parsed.source, prop),
+            "Adding this property would make Doma bind a value where the database currently supplies a default.",
+            "Decide manually whether to preserve the database-default behavior before adding this property.", (),
+        )
     for qualified, kind in (
         ("org.seasar.doma.Version", "version-semantics"),
         ("org.seasar.doma.TenantId", "tenant-id-semantics"),
@@ -810,21 +861,7 @@ def _existing_addition_candidate_mismatch(
             )
     generated = _annotation(prop, "org.seasar.doma.GeneratedValue")
     if generated is not None:
-        db_pk = tuple(str(item["column"]) for item in (table.primary_key or ()))
-        candidate_pk = tuple(
-            item.column for item in candidate.parsed.entity.properties
-            if _annotation(item, "org.seasar.doma.Id") is not None
-        )
-        generated_is_identity = (
-            dict(generated.arguments).get("strategy") == "GenerationType.IDENTITY"
-        )
-        expected_identity = (
-            column.get("auto_increment") is True
-            and len(db_pk) == 1
-            and candidate_pk == db_pk
-            and prop.column in candidate_pk
-        )
-        if not expected_identity or not generated_is_identity:
+        if not _generated_value_is_proven_identity(table, candidate, prop):
             return _make_finding(
                 "BLOCKED", "generated-value-semantics", existing_path,
                 table.identity, prop.column, context, None,
@@ -853,6 +890,32 @@ def _existing_addition_candidate_mismatch(
                 "Regenerate the candidate from the authoritative snapshot.", (),
             )
     return None
+
+
+def _generated_value_is_proven_identity(
+    table: _Table,
+    candidate: _ParsedFile,
+    prop: PropertyModel,
+) -> bool:
+    """Return whether this exact candidate proves Doma IDENTITY semantics."""
+    generated = _annotation(prop, "org.seasar.doma.GeneratedValue")
+    candidate_pk = tuple(
+        item.column for item in candidate.parsed.entity.properties
+        if _annotation(item, "org.seasar.doma.Id") is not None
+    )
+    database_pk = tuple(str(item["column"]) for item in (table.primary_key or ()))
+    return (
+        generated is not None
+        and dict(generated.arguments).get("strategy") == "GenerationType.IDENTITY"
+        and prop.column in candidate_pk
+        and candidate_pk == database_pk
+        and len(database_pk) == 1
+        and any(
+            column.get("name") == prop.column
+            and column.get("auto_increment") is True
+            for column in table.columns
+        )
+    )
 
 
 def _new_entity_finding(
@@ -1442,11 +1505,56 @@ def _localized_safe_edits_in_unsupported_source(
     if metadata_findings or blockers:
         return metadata_findings + blockers
     allowed = {"add-property", "synchronize-primary-key"}
-    localized = tuple(
-        finding for finding in compared
-        if finding.status == "SAFE" and finding.kind in allowed
+    localized: list[Finding] = []
+    for finding in compared:
+        if finding.status != "SAFE" or finding.kind not in allowed:
+            continue
+        if finding.kind == "add-property":
+            collision = _add_property_accessor_collision(existing, candidate, finding.column)
+            if collision is not None:
+                localized.append(_make_finding(
+                    "BLOCKED", finding.kind, finding.path, finding.table, finding.column,
+                    finding.database, finding.existing, finding.candidate,
+                    "The generated accessor would collide with handwritten method " + collision + ".",
+                    "Keep the handwritten method and decide the property API manually before replanning.", (),
+                ))
+                continue
+        localized.append(finding)
+    return metadata_findings + tuple(localized)
+
+
+def _add_property_accessor_collision(
+    existing: _ParsedFile,
+    candidate: _ParsedFile,
+    column: str | None,
+) -> str | None:
+    """Detect accessor names that an inserted property would duplicate."""
+    if column is None:
+        return "an unknown method"
+    prop = next(
+        (item for item in candidate.parsed.entity.properties if item.column == column),
+        None,
     )
-    return metadata_findings + localized
+    if prop is None:
+        return "an unknown method"
+    accessor_names = {
+        method.name for method in candidate.parsed.entity.methods
+        if method.generated_accessor_for == prop.name
+    }
+    if candidate.parsed.entity.language == "kotlin":
+        capitalized = prop.name[:1].upper() + prop.name[1:]
+        accessor_names.update({"get" + capitalized, "set" + capitalized})
+        if (
+            prop.type_name.rstrip("?") == "Boolean"
+            and prop.name.startswith("is")
+            and len(prop.name) > 2
+            and prop.name[2].isupper()
+        ):
+            accessor_names.update({prop.name, "set" + prop.name[2:]})
+    for method in existing.parsed.entity.methods:
+        if method.name in accessor_names:
+            return method.signature
+    return None
 
 
 def _unsupported_kind(reasons: Sequence[str]) -> str:
