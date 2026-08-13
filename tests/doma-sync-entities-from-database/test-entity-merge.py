@@ -2233,6 +2233,26 @@ class EntityMergeTests(unittest.TestCase):
                 "BLOCKED",
             ),
             (
+                "alias-extension-receiver",
+                {"probe/Use.kt": (
+                    "package probe\n"
+                    "import example.entity.Employee as Staff\n"
+                    "fun Staff.use() = legacy\n"
+                )},
+                "legacy",
+                "BLOCKED",
+            ),
+            (
+                "alias-typed-variable-receiver",
+                {"probe/Use.kt": (
+                    "package probe\n"
+                    "import example.entity.Employee as Staff\n"
+                    "fun use(employee: Staff) = employee.legacy\n"
+                )},
+                "legacy",
+                "BLOCKED",
+            ),
+            (
                 "safe-call-receiver",
                 {"probe/Use.kt": (
                     "package example.entity\n"

@@ -370,11 +370,31 @@ fi
 redact_stream() (
   unset_aws_credentials
   export DOMA_REDACT_PASSWORD="$db_password" DOMA_REDACT_TOKEN="$iam_token"
+  export DOMA_REDACT_DB_URL="$db_url" DOMA_REDACT_DB_USER="$db_user"
   command python3 -c '
-import os, sys
-values = [v.encode() for v in (os.environ.get("DOMA_REDACT_PASSWORD", ""), os.environ.get("DOMA_REDACT_TOKEN", "")) if v]
+import os, re, sys
+values = [v.encode() for v in (
+    os.environ.get("DOMA_REDACT_PASSWORD", ""),
+    os.environ.get("DOMA_REDACT_TOKEN", ""),
+    os.environ.get("DOMA_REDACT_DB_URL", ""),
+    os.environ.get("DOMA_REDACT_DB_USER", ""),
+) if v]
+for url in (os.environ.get("DOMA_REDACT_DB_URL", ""),):
+    endpoint = re.match(
+        r"(?i)^jdbc:(?:postgresql|mysql):(?://(?:[^/@\s]+@)?(\[[^\]]+\]|[^/:?\s]+))",
+        url,
+    )
+    if endpoint and endpoint.group(1):
+        values.append(endpoint.group(1).encode())
+jdbc_url = re.compile(rb"(?i)jdbc:(?:postgresql|mysql):[^\\s\\\"\x27<>]+")
+db_user = re.compile(
+    rb"(?i)\\b(user(?:name)?|db[_ -]?user)\\s*([:=])\\s*([\\\"\x27]?)"
+    rb"[^\\s,;\\\"\x27]+"
+)
 for data in sys.stdin.buffer:
     for value in values: data = data.replace(value, b"[REDACTED]")
+    data = jdbc_url.sub(b"[REDACTED_JDBC_URL]", data)
+    data = db_user.sub(lambda match: match.group(1) + match.group(2) + b"[REDACTED]", data)
     sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
 '
 )

@@ -2041,6 +2041,26 @@ def _file_resolves_entity(item: _SourceFile, entity: EntityModel) -> bool:
     )
 
 
+def _entity_type_names(item: _SourceFile, entity: EntityModel) -> frozenset[str]:
+    """Return source-level type names that resolve to this entity.
+
+    Kotlin permits an import alias in a receiver or explicit type annotation.
+    Retain the canonical name and recognize only aliases for this exact FQCN;
+    an uncertain import must never allow a destructive merge edit.
+    """
+    names = {entity.class_name}
+    if item.language != "kotlin":
+        return frozenset(names)
+    fqcn = (entity.package_name + "." if entity.package_name else "") + entity.class_name
+    aliases = re.findall(
+        r"(?m)^\s*import\s+" + re.escape(fqcn)
+        + r"\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*$",
+        item.source,
+    )
+    names.update(aliases)
+    return frozenset(names)
+
+
 def _matching_token(
     tokens: Sequence[Token], start: int, opener: str, closer: str
 ) -> int | None:
@@ -2132,12 +2152,13 @@ def _typed_entity_variables(
 ) -> frozenset[str]:
     result: set[str] = set()
     collection_symbols = _entity_collection_symbols(item, tokens, entity)
+    type_names = _entity_type_names(item, entity)
     if _file_resolves_entity(item, entity) and item.language == "kotlin":
         for index in range(1, len(tokens) - 1):
             if (
                 tokens[index].text == ":"
                 and _identifier(tokens[index - 1])
-                and _identifier(tokens[index + 1]) == entity.class_name
+                and _identifier(tokens[index + 1]) in type_names
             ):
                 result.add(_identifier(tokens[index - 1]))
     elif _file_resolves_entity(item, entity):
@@ -2781,7 +2802,7 @@ def _has_kotlin_receiver_scope_reference(
         if open_index is None:
             continue
         receiver = any(
-            _identifier(tokens[cursor]) == entity.class_name
+            _identifier(tokens[cursor]) in _entity_type_names(item, entity)
             and cursor + 1 < open_index
             and tokens[cursor + 1].text == "."
             for cursor in range(index + 1, open_index)

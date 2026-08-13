@@ -179,6 +179,27 @@ class GenerateWrapperTest(unittest.TestCase):
         self.assertIn("DOMA_CODEGEN_DB_PASSWORD", result.stderr)
         self.assertEqual([], self._calls())
 
+    def test_gradle_child_connection_identity_output_is_redacted(self):
+        self._local_env()
+        endpoint = "jdbc:postgresql://rds.internal.example:5432/app"
+        user = "private_db_user"
+        self.env.update({
+            "DOMA_CODEGEN_DB_URL": endpoint,
+            "DOMA_CODEGEN_DB_USER": user,
+            "EXPECTED_DB_URL": endpoint,
+            "EXPECTED_DB_USER": user,
+            "FAKE_LEAK_CONNECTION_CONTEXT": "true",
+        })
+        result = self._run()
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertNotIn(endpoint, combined)
+        self.assertNotIn("rds.internal.example", combined)
+        self.assertNotIn(user, combined)
+        self.assertIn("[REDACTED", result.stdout)
+        self.assertIn("[REDACTED", result.stderr)
+        self.assertIn("Gradle CodeGen classpath task failed", combined)
+
     def test_local_query_credentials_stop_before_java_or_gradle(self):
         self._local_env()
         query_secret = "query-secret-sentinel-4"

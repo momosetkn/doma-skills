@@ -69,6 +69,14 @@ if os.environ.get("FAKE_REJECT_GRADLE_USER_PROPERTIES") == "true":
         raise SystemExit(96)
     log("gradle-user-home-clean|" + task)
 expose_aws_environment(task)
+if os.environ.get("FAKE_LEAK_CONNECTION_CONTEXT") == "true":
+    context = (
+        "connection failed: jdbc:postgresql://rds.internal.example:5432/app "
+        "user=private_db_user; host=rds.internal.example"
+    )
+    print(context)
+    print(context, file=sys.stderr)
+    raise SystemExit(94)
 if task == "domaSyncWriteCodeGenClasspath":
     output = root / "build/doma-codegen/codegen-classpath.txt"
     output.parent.mkdir(parents=True, exist_ok=True)
