@@ -75,8 +75,6 @@ def apply_plan(
     if unknown:
         raise PlanInputError("approval ID is unknown or not an executable review proposal")
 
-    _verify_git(root)
-
     selected = tuple(
         finding for finding in merge_plan.findings
         if finding.edits and (
@@ -84,6 +82,7 @@ def apply_plan(
             or (finding.status == "REVIEW_REQUIRED" and finding.finding_id in approved)
         )
     )
+    _verify_git(root, selected)
     edits_by_path: dict[str, list[Edit]] = {}
     roots_by_path: dict[str, str] = {}
     finding_ids_by_path: dict[str, set[str]] = {}
@@ -341,7 +340,16 @@ def _verify_create_binding(root: Path, plan: MergePlan, finding: Finding, edit: 
         raise PlanInputError("create content is not the exact hashed generated candidate")
 
 
-def _verify_git(root: Path) -> None:
+def _verify_git(root: Path, selected: Sequence[Finding]) -> None:
+    pathspecs = {
+        edit.path
+        for finding in selected
+        for edit in finding.edits
+    }
+    pathspecs.update(
+        path.name for path in (root / "build.gradle.kts", root / "build.gradle")
+        if path.is_file() and not path.is_symlink()
+    )
     try:
         inside = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"], cwd=root,
@@ -350,7 +358,7 @@ def _verify_git(root: Path) -> None:
         if inside.returncode != 0 or inside.stdout.strip() != "true":
             raise UnsafeProjectError("project root is not a Git worktree")
         status_result = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no", "--", "."],
+            ["git", "status", "--porcelain", "--untracked-files=no", "--", *sorted(pathspecs)],
             cwd=root, text=True, capture_output=True, check=False,
         )
     except OSError as exception:

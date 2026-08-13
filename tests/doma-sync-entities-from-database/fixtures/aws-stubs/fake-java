@@ -35,6 +35,18 @@ expected = {
 if any(os.environ.get(actual) != os.environ.get(wanted) for actual, wanted in expected.items()):
     print("credential environment mismatch", file=sys.stderr)
     raise SystemExit(92)
+expected_scope = {
+    "DOMA_CODEGEN_DB_SCHEMA": "EXPECTED_DB_SCHEMA",
+    "DOMA_CODEGEN_DB_CATALOG": "EXPECTED_DB_CATALOG",
+    "DOMA_CODEGEN_TABLE_PATTERN": "EXPECTED_TABLE_PATTERN",
+}
+if any(
+    os.environ.get(wanted) is not None
+    and os.environ.get(actual) != os.environ.get(wanted)
+    for actual, wanted in expected_scope.items()
+):
+    print("metadata scope mismatch", file=sys.stderr)
+    raise SystemExit(93)
 output = Path(os.environ["DOMA_CODEGEN_SCHEMA_SNAPSHOT"])
 output.parent.mkdir(parents=True, exist_ok=True)
 content = os.environ.get("FAKE_SNAPSHOT_SECRET")

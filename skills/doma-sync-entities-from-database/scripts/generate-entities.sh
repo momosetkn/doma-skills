@@ -13,6 +13,9 @@ profile=""
 secret_id=""
 db_name=""
 db_user_option=""
+requested_schema=""
+requested_catalog=""
+table_pattern=".*"
 db_url=""
 db_user=""
 db_password=""
@@ -55,6 +58,9 @@ while [[ $# -gt 0 ]]; do
     --secret-id) require_value "$@"; secret_id=$2; shift 2 ;;
     --db-name) require_value "$@"; db_name=$2; shift 2 ;;
     --db-user) require_value "$@"; db_user_option=$2; shift 2 ;;
+    --schema) require_value "$@"; requested_schema=$2; shift 2 ;;
+    --catalog) require_value "$@"; requested_catalog=$2; shift 2 ;;
+    --table-pattern) require_value "$@"; table_pattern=$2; shift 2 ;;
     --password|--db-password|--token|--access-key|--secret-value|--jdbc-url|--url)
       die "$1 is forbidden; pass credentials only through the documented environment"
       ;;
@@ -584,11 +590,16 @@ fi
 schema=""
 catalog=""
 if [[ "$database" == "postgresql" ]]; then
-  schema=public
+  [[ -z "$requested_catalog" ]] || die "--catalog is only valid with mysql"
+  schema=${requested_schema:-public}
+  [[ "$schema" =~ ^[A-Za-z_][A-Za-z0-9_.\$-]*$ ]] || die "--schema is invalid"
 else
+  [[ -z "$requested_schema" ]] || die "--schema is only valid with postgresql"
   validate_scalar "database name" "$db_name"
-  catalog=$db_name
+  catalog=${requested_catalog:-$db_name}
+  [[ "$catalog" == "$db_name" ]] || die "--catalog must match the selected mysql database"
 fi
+validate_scalar "table pattern" "$table_pattern"
 
 set +e
 (
@@ -597,7 +608,7 @@ set +e
   unset DOMA_SYNC_JDBC_URL DOMA_SYNC_JDBC_USER DOMA_SYNC_JDBC_PASSWORD
   export DOMA_CODEGEN_DB_URL="$db_url" DOMA_CODEGEN_DB_USER="$db_user" DOMA_CODEGEN_DB_PASSWORD="$db_password"
   export DOMA_CODEGEN_DB_KIND="$database" DOMA_CODEGEN_DB_SCHEMA="$schema" DOMA_CODEGEN_DB_CATALOG="$catalog"
-  export DOMA_CODEGEN_TABLE_PATTERN='.*' DOMA_CODEGEN_SCHEMA_SNAPSHOT="$snapshot_file" DOMA_CODEGEN_PROJECT_ROOT="$project_root"
+  export DOMA_CODEGEN_TABLE_PATTERN="$table_pattern" DOMA_CODEGEN_SCHEMA_SNAPSHOT="$snapshot_file" DOMA_CODEGEN_PROJECT_ROOT="$project_root"
   run_redacted java --class-path "$codegen_classpath" "$script_dir/schema-snapshot.java"
 )
 snapshot_status=$?

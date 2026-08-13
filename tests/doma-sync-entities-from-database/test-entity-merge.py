@@ -21,7 +21,7 @@ CLI = SCRIPTS / "compare-and-merge-entities.py"
 FIXTURES = Path(__file__).parent / "fixtures"
 sys.path.insert(0, str(SCRIPTS))
 
-from entity_sync.applier import StalePlanError, apply_plan
+from entity_sync.applier import StalePlanError, UnsafeProjectError, apply_plan
 from entity_sync.model import SourceSpan, TableIdentity
 from entity_sync.planner import (
     Edit,
@@ -2420,6 +2420,60 @@ class EntityMergeTests(unittest.TestCase):
         subprocess.run(["git", "checkout", "--", str(target.relative_to(project.root))], cwd=project.root, check=True)
         with self.assertRaises(PlanInputError):
             apply_plan(project.root, plan, approvals=("unknown-proposal",))
+
+    def test_unrelated_tracked_changes_are_allowed_but_dirty_build_file_blocks_apply(self) -> None:
+        project = ProjectFixture(self)
+        candidate = java_entity(
+            fields=(
+                java_field("id", "employee_id", annotations=("@Id",), doc="/** Employee ID */")
+                + java_field("displayName", "display_name", "String", doc="/** Display name */")
+                + java_field("version", "version", "Long")
+            ),
+            methods=(
+                java_accessors("id")
+                + java_accessors("displayName", "String")
+                + java_accessors("version", "Long")
+            ),
+            imports=("org.seasar.doma.Id",),
+        )
+        project.generated_file().write_text(candidate, encoding="utf-8")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(
+            json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        target = project.existing_file(
+            java_entity(
+                fields=(
+                    java_field("id", "employee_id", annotations=("@Id",))
+                    + java_field("version", "version")
+                ),
+                methods=java_accessors("id") + java_accessors("version"),
+                imports=("org.seasar.doma.Id",),
+            )
+        )
+        readme = project.root / "README.md"
+        readme.write_text("before\n", encoding="utf-8")
+        plan = project.plan()
+        project.commit()
+
+        readme.write_text("unrelated tracked change\n", encoding="utf-8")
+        result = apply_plan(project.root, plan, approvals=())
+        self.assertTrue(result.applied)
+        self.assertIn("displayName", target.read_text(encoding="utf-8"))
+
+        subprocess.run(
+            ["git", "checkout", "--", str(readme.relative_to(project.root)),
+             str(target.relative_to(project.root))],
+            cwd=project.root, check=True,
+        )
+        plan = project.plan()
+        build_file = project.root / "build.gradle.kts"
+        build_file.write_text(build_file.read_text(encoding="utf-8") + "// dirty\n", encoding="utf-8")
+        before = target.read_bytes()
+        with self.assertRaises(UnsafeProjectError):
+            apply_plan(project.root, plan, approvals=())
+        self.assertEqual(before, target.read_bytes())
 
     def test_auto_language_plan_replays_the_exact_mixed_language_plan(self) -> None:
         project = ProjectFixture(self)

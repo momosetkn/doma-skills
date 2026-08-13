@@ -122,6 +122,19 @@ class GenerateWrapperTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("java|", "\n".join(self._calls()))
 
+    def test_explicit_postgresql_schema_and_table_scope_reach_snapshot(self):
+        self._local_env()
+        self.env.update({
+            "EXPECTED_DB_SCHEMA": "tenant",
+            "EXPECTED_DB_CATALOG": "",
+            "EXPECTED_TABLE_PATTERN": "tenant_.*",
+        })
+        result = self._run(extra=(
+            "--schema", "tenant", "--table-pattern", "tenant_.*",
+        ))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("java|", "\n".join(self._calls()))
+
     def test_user_gradle_properties_are_used_when_environment_is_absent(self):
         (self.user_gradle / "gradle.properties").write_text(
             "domaCodegenDbUrl jdbc:postgresql://properties.example.test:5432/app\n"
