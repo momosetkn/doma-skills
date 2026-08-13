@@ -187,6 +187,16 @@ def _canonical_planning_request(
         "src/main/java": root / "src/main/java",
         "src/main/kotlin": root / "src/main/kotlin",
     }
+    # These roots are reference-only: Gradle clean builds compile them, but
+    # Entity edits may still target only the selected main roots below.
+    reference_supported = {
+        **supported,
+        **{
+            f"src/{source_set}/{language}": root / "src" / source_set / language
+            for source_set in ("test", "integrationTest", "functionalTest", "testFixtures")
+            for language in ("java", "kotlin")
+        },
+    }
     selected_roots: set[str] = set()
     generated_languages: set[str] = set()
     source_languages: set[str] = set()
@@ -197,12 +207,13 @@ def _canonical_planning_request(
         generated_languages.add(_source_language(path))
     for path, _ in plan.source_hashes:
         source_root = next(
-            (name for name in supported if _plan_path_below(path, name)), None
+            (name for name in reference_supported if _plan_path_below(path, name)), None
         )
         if source_root is None:
             raise UnsafeProjectError("planned source input is outside supported source roots")
-        selected_roots.add(source_root)
-        source_languages.add(_source_language(path))
+        if source_root in supported:
+            selected_roots.add(source_root)
+            source_languages.add(_source_language(path))
 
     for finding in plan.findings:
         existing_root = finding.database.get("existing_root")

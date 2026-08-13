@@ -55,8 +55,15 @@ qualified/parenthesized receivers, common generic collection extraction through
 `get(index)`, indexing, `first`, and `filter` chains, extension functions,
 labeled receiver
 scopes, and `with`, `apply`, `run`, `let`, or `also`; it also includes Java JVM
-getter/setter references. Any affected use makes removal or signature change
-`BLOCKED`.
+getter/setter references. Exact Kotlin import aliases, local non-generic
+`typealias` declarations, explicit `as` casts, qualified names, and direct
+generic Entity arguments (including nullable forms) are included. A direct
+generic Entity wrapper is conservatively treated as an Entity receiver after
+one terminal unwrap method/property. The scan also includes conventional
+compiled test/integration/functional/test-fixture Java and Kotlin source roots
+when present. This is intentionally not a full compiler type resolver: an
+uncertain receiver never makes an API-changing edit safer. Any affected use
+makes removal or signature change `BLOCKED`.
 
 ## Fail-Closed Kotlin Constructs
 

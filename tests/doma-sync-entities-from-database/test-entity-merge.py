@@ -2847,6 +2847,181 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("SAFE", finding.status)
                 self.assertTrue(finding.edits)
 
+    def test_qualified_alias_cast_and_test_source_receivers_block_type_changes(self) -> None:
+        """Never change an Entity API while a non-target source can call it.
+
+        These are deliberately ordinary handwritten call sites that compile before
+        the proposed ``Integer`` -> ``Long`` Entity change and fail afterwards.
+        The planner may be conservative, but it must not emit executable edits.
+        """
+        cases = (
+            (
+                "java-imported-map",
+                "src/main/java/probe/Use.java",
+                "package probe; import java.util.Map; import example.entity.Employee; "
+                "class Use { Integer f(Map<String, Employee> xs, String key) { "
+                "return xs.get(key).getId(); } }\n",
+            ),
+            (
+                "java-fqcn-map",
+                "src/main/java/probe/Use.java",
+                "package probe; import java.util.Map; class Use { Integer f("
+                "Map<String, example.entity.Employee> xs, String key) { "
+                "return xs.get(key).getId(); } }\n",
+            ),
+            (
+                "java-cast",
+                "src/main/java/probe/Use.java",
+                "package probe; import example.entity.Employee; class Use { "
+                "Integer f(Object value) { return ((Employee) value).getId(); } }\n",
+            ),
+            (
+                "java-optional-generic",
+                "src/main/java/probe/Use.java",
+                "package probe; import java.util.Optional; import example.entity.Employee; "
+                "class Use { Integer f(Optional<Employee> value) { "
+                "return value.orElseThrow().getId(); } }\n",
+            ),
+            (
+                "java-custom-generic",
+                "src/main/java/probe/Use.java",
+                "package probe; import example.entity.Employee; "
+                "class Box<T> { T unwrap() { return null; } } "
+                "class Use { Integer f(Box<Employee> value) { "
+                "return value.unwrap().getId(); } }\n",
+            ),
+            (
+                "java-fqcn-variable",
+                "src/main/java/probe/Use.java",
+                "package probe; class Use { Integer f(example.entity.Employee value) { "
+                "return value.getId(); } }\n",
+            ),
+            (
+                "java-test-source",
+                "src/test/java/probe/Use.java",
+                "package probe; import example.entity.Employee; class Use { "
+                "Integer f(Employee e) { return e.getId(); } }\n",
+            ),
+            (
+                "kotlin-alias-collection",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee as Staff\n"
+                "fun use(xs: List<Staff>): Int = xs.first().id\n",
+            ),
+            (
+                "kotlin-fqcn-collection",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nfun use(xs: List<example.entity.Employee>): Int = "
+                "xs.first().id\n",
+            ),
+            (
+                "kotlin-cast",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee\n"
+                "fun use(value: Any): Int = ((value as Employee)).id\n",
+            ),
+            (
+                "kotlin-typealias",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee\n"
+                "typealias Staff = Employee\nfun use(e: Staff): Int = e.id\n",
+            ),
+            (
+                "kotlin-result-generic",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee\n"
+                "fun use(value: Result<Employee>): Int = value.getOrThrow().id\n",
+            ),
+            (
+                "kotlin-optional-like-generic",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee\n"
+                "class Box<T>(private val value: T) { fun get(): T = value }\n"
+                "fun use(box: Box<Employee>): Int = box.get().id\n",
+            ),
+            (
+                "kotlin-custom-generic-property",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee\n"
+                "class Box<T>(val value: T) { fun unwrap(): T = value }\n"
+                "fun use(box: Box<Employee>): Int = box.unwrap().id + box.value.id\n",
+            ),
+            (
+                "kotlin-custom-generic-property-only",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee\n"
+                "class Box<T>(val value: T)\n"
+                "fun use(box: Box<Employee>): Int = box.value.id\n",
+            ),
+            (
+                "kotlin-nullable-entity",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee\n"
+                "fun use(value: Employee?): Int = value!!.id\n",
+            ),
+            (
+                "kotlin-nullable-alias",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nimport example.entity.Employee as Staff\n"
+                "fun use(value: Staff?): Int = value!!.id\n",
+            ),
+            (
+                "kotlin-nullable-fqcn",
+                "src/main/kotlin/probe/Use.kt",
+                "package probe\nfun use(value: example.entity.Employee?): Int = value!!.id\n",
+            ),
+        )
+        for label, relative, reference in cases:
+            with self.subTest(receiver=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+                snapshot["tables"][0]["columns"][0].update({
+                    "jdbc_type": -5, "type_name": "int8", "size": 64,
+                    "scale": 0, "auto_increment": False,
+                })
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Long", annotations=("@Id",),
+                        doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ), encoding="utf-8")
+                target = project.existing_file(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Integer", annotations=("@Id",),
+                        doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Integer"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                (project.root / "src/main/kotlin").mkdir(parents=True, exist_ok=True)
+                probe = project.root / relative
+                probe.parent.mkdir(parents=True, exist_ok=True)
+                probe.write_text(reference, encoding="utf-8")
+
+                plan = build_plan(
+                    project.root, project.snapshot, project.generated,
+                    (project.existing, project.root / "src/main/kotlin"), "java",
+                )
+                finding = next(
+                    item for item in plan.findings
+                    if item.kind in {"widen-basic-type", "narrow-basic-type"}
+                )
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
+                self.assertIn(relative, dict(plan.source_hashes))
+                before = target.read_bytes()
+                project.commit()
+                result = apply_plan(project.root, plan, approvals=())
+                self.assertEqual("BLOCKED", result.state)
+                self.assertEqual(before, target.read_bytes())
+
     def test_java_record_lombok_and_version_inference_are_blocked(self) -> None:
         project = ProjectFixture(self)
         project.generated_file()

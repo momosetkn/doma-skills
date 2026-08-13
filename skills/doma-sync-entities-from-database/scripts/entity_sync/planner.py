@@ -38,7 +38,8 @@ _ENTITY_COLLECTION_TYPES = {
     "ArrayList", "Collection", "Deque", "HashSet", "Iterable",
     "LinkedList", "List", "MutableCollection", "MutableIterable",
     "MutableList", "MutableSet", "NavigableSet", "Queue", "Sequence",
-    "Set", "SortedSet", "Stack", "TreeSet", "Vector",
+    "Set", "SortedSet", "Stack", "TreeSet", "Vector", "Map",
+    "HashMap", "LinkedHashMap", "SortedMap", "TreeMap", "ConcurrentMap",
 }
 _STANDARD_TYPE_NAMES = {
     "bigint": "Long", "binary": "byte[]", "bit": "Boolean", "blob": "Blob",
@@ -168,15 +169,25 @@ class _CodeGenNaming:
 
 @dataclass(frozen=True)
 class _CollectionSymbols:
-    variables: tuple[tuple[str, int, int, bool], ...]
+    variables: tuple[tuple[str, int, int, bool, bool], ...]
     factories: frozenset[str]
 
     def names_at(self, position: int) -> frozenset[str]:
-        latest: dict[str, tuple[int, bool]] = {}
-        for name, declared_at, scope_end, direct in self.variables:
+        latest: dict[str, tuple[int, bool, bool]] = {}
+        for name, declared_at, scope_end, direct, wrapper in self.variables:
             if declared_at <= position <= scope_end:
-                latest[name] = (declared_at, direct)
-        return frozenset(name for name, (_, direct) in latest.items() if direct)
+                latest[name] = (declared_at, direct, wrapper)
+        return frozenset(name for name, (_, direct, _) in latest.items() if direct)
+
+    def wrapper_names_at(self, position: int) -> frozenset[str]:
+        latest: dict[str, tuple[int, bool, bool]] = {}
+        for name, declared_at, scope_end, direct, wrapper in self.variables:
+            if declared_at <= position <= scope_end:
+                latest[name] = (declared_at, direct, wrapper)
+        return frozenset(
+            name for name, (_, direct, wrapper) in latest.items()
+            if direct and wrapper
+        )
 
 
 def build_plan(
@@ -214,7 +225,8 @@ def build_plan(
     tables = _validate_manifest(manifest)
     snapshot_hash = _sha(snapshot_bytes)
 
-    reference_files = _collect_sources(root, source_roots, "auto")
+    reference_roots = _reference_source_roots(root, source_roots)
+    reference_files = _collect_sources(root, reference_roots, "auto")
     generated_files = _collect_sources(root, (generated_root,), language)
     if not generated_files and tables:
         raise PlanInputError("generated candidate directory contains no entity sources")
@@ -226,6 +238,7 @@ def build_plan(
     )
     existing_parsed = tuple(
         item for item in reference_parsed
+        if any(_contains_path(source_root, root / item.file.path) for source_root in source_roots)
         if language == "auto" or item.file.language == language
     )
     existing_failures = tuple(
@@ -2049,7 +2062,7 @@ def _entity_type_names(item: _SourceFile, entity: EntityModel) -> frozenset[str]
     an uncertain import must never allow a destructive merge edit.
     """
     names = {entity.class_name}
-    if item.language != "kotlin":
+    if item.language != "kotlin" or not _file_resolves_entity(item, entity):
         return frozenset(names)
     fqcn = (entity.package_name + "." if entity.package_name else "") + entity.class_name
     aliases = re.findall(
@@ -2058,6 +2071,16 @@ def _entity_type_names(item: _SourceFile, entity: EntityModel) -> frozenset[str]
         item.source,
     )
     names.update(aliases)
+    # A local typealias is a source-level Entity type.  We recognize only an
+    # exact, non-generic alias to this Entity; other aliases remain unknown and
+    # therefore cannot make a destructive change safer.
+    typealias_pattern = (
+        r"(?m)^\s*typealias\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*"
+        r"(?:[A-Za-z_$][A-Za-z0-9_$]*\.)*([A-Za-z_$][A-Za-z0-9_$]*)\s*$"
+    )
+    for alias, target in re.findall(typealias_pattern, item.source):
+        if target in names:
+            names.add(alias)
     return frozenset(names)
 
 
@@ -2155,10 +2178,14 @@ def _typed_entity_variables(
     type_names = _entity_type_names(item, entity)
     if _file_resolves_entity(item, entity) and item.language == "kotlin":
         for index in range(1, len(tokens) - 1):
-            if (
-                tokens[index].text == ":"
-                and _identifier(tokens[index - 1])
-                and _identifier(tokens[index + 1]) in type_names
+            if tokens[index].text != ":" or not _identifier(tokens[index - 1]):
+                continue
+            type_end = next((
+                cursor for cursor in range(index + 1, len(tokens))
+                if tokens[cursor].text in {"=", "{", "}", ",", ")", ";"}
+            ), len(tokens))
+            if _exact_entity_type_reference(
+                tokens, index + 1, type_end, type_names
             ):
                 result.add(_identifier(tokens[index - 1]))
     elif _file_resolves_entity(item, entity):
@@ -2198,18 +2225,16 @@ def _entity_collection_symbols(
 ) -> _CollectionSymbols:
     if not _file_resolves_entity(item, entity):
         return _CollectionSymbols((), frozenset())
-    declarations: list[tuple[str, int, int, bool]] = []
+    declarations: list[tuple[str, int, int, bool, bool]] = []
     factories: set[str] = set()
     for index in range(len(tokens) - 3):
-        if (
-            _identifier(tokens[index]) not in _ENTITY_COLLECTION_TYPES
-            or tokens[index + 1].text != "<"
-        ):
+        if tokens[index + 1].text != "<":
             continue
         close = _matching_token(tokens, index + 1, "<", ">")
         if close is None:
             continue
-        direct = _direct_entity_type_argument(tokens, index + 2, close, entity)
+        direct = _direct_entity_type_argument(item, tokens, index + 2, close, entity)
+        wrapper = _identifier(tokens[index]) not in _ENTITY_COLLECTION_TYPES
         if item.language == "kotlin":
             if (
                 direct
@@ -2228,7 +2253,7 @@ def _entity_collection_symbols(
                     variable_index = index - 2
                     declarations.append((
                         variable, variable_index,
-                        _binding_scope_end(tokens, variable_index), direct,
+                        _binding_scope_end(tokens, variable_index), direct, wrapper,
                     ))
         elif close + 1 < len(tokens):
             name = _identifier(tokens[close + 1])
@@ -2240,10 +2265,10 @@ def _entity_collection_symbols(
                     variable_index = close + 1
                     declarations.append((
                         name, variable_index,
-                        _binding_scope_end(tokens, variable_index), direct,
+                        _binding_scope_end(tokens, variable_index), direct, wrapper,
                     ))
     declarations.sort(key=lambda item: item[1])
-    inferred: list[tuple[str, int, int, bool]] = []
+    inferred: list[tuple[str, int, int, bool, bool]] = []
     changed = True
     while changed:
         changed = False
@@ -2257,14 +2282,14 @@ def _entity_collection_symbols(
             )
             if any(
                 name == target and statement_start < declared_at < index
-                for name, declared_at, _, _ in declarations
+                for name, declared_at, _, _, _ in declarations
             ):
                 continue
             active = _collection_names_at(declarations, inferred, index)
             direct = _collection_expression_after(
-                tokens, index + 1, active, frozenset(factories), entity
+                item, tokens, index + 1, active, frozenset(factories), entity
             )
-            binding = (target, index, _binding_scope_end(tokens, index), direct)
+            binding = (target, index, _binding_scope_end(tokens, index), direct, False)
             if target and binding not in inferred:
                 inferred = [item for item in inferred if item[:2] != binding[:2]]
                 inferred.append(binding)
@@ -2277,20 +2302,20 @@ def _entity_collection_symbols(
 
 
 def _collection_names_at(
-    declarations: Sequence[tuple[str, int, int, bool]],
-    inferred: Sequence[tuple[str, int, int, bool]],
+    declarations: Sequence[tuple[str, int, int, bool, bool]],
+    inferred: Sequence[tuple[str, int, int, bool, bool]],
     position: int,
 ) -> frozenset[str]:
-    latest: dict[str, tuple[int, bool]] = {}
-    for name, declared_at, scope_end, direct in declarations:
+    latest: dict[str, tuple[int, bool, bool]] = {}
+    for name, declared_at, scope_end, direct, wrapper in declarations:
         if declared_at <= position <= scope_end:
-            latest[name] = (declared_at, direct)
-    for name, declared_at, scope_end, direct in inferred:
+            latest[name] = (declared_at, direct, wrapper)
+    for name, declared_at, scope_end, direct, wrapper in inferred:
         if declared_at <= position <= scope_end and (
             name not in latest or declared_at >= latest[name][0]
         ):
-            latest[name] = (declared_at, direct)
-    return frozenset(name for name, (_, direct) in latest.items() if direct)
+            latest[name] = (declared_at, direct, wrapper)
+    return frozenset(name for name, (_, direct, _) in latest.items() if direct)
 
 
 def _assignment_declares_inferred_variable(
@@ -2364,8 +2389,43 @@ def _expression_scope_end(tokens: Sequence[Token], start: int) -> int:
 
 
 def _direct_entity_type_argument(
-    tokens: Sequence[Token], start: int, end: int, entity: EntityModel
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    start: int,
+    end: int,
+    entity: EntityModel,
 ) -> bool:
+    """Whether one top-level generic argument is an exact Entity type.
+
+    ``Map<String, Employee>`` and ``Box<Employee>`` are Entity receivers,
+    whereas ``List<Box<Employee>>`` is not: accessing the list yields ``Box``.
+    This deliberately supports qualified names and Kotlin aliases while never
+    descending into a nested generic argument.
+    """
+    type_names = _entity_type_names(item, entity)
+    cursor = start
+    while cursor < end:
+        argument_start = cursor
+        depth = 0
+        while cursor < end:
+            text = tokens[cursor].text
+            if text == "<":
+                depth += 1
+            elif text == ">":
+                depth = max(0, depth - 1)
+            elif text == "," and depth == 0:
+                break
+            cursor += 1
+        if _exact_entity_type_reference(tokens, argument_start, cursor, type_names):
+            return True
+        cursor += 1
+    return False
+
+
+def _exact_entity_type_reference(
+    tokens: Sequence[Token], start: int, end: int, type_names: frozenset[str]
+) -> bool:
+    """Recognize one non-generic qualified type reference, including variance."""
     cursor = start
     if cursor < end and _identifier(tokens[cursor]) in {"in", "super"}:
         return False
@@ -2387,7 +2447,10 @@ def _direct_entity_type_argument(
         if cursor >= end or tokens[cursor].text != ".":
             break
         cursor += 1
-    return bool(parts) and parts[-1] == entity.class_name and cursor == end
+    # Kotlin nullable type syntax does not change the referenced class.
+    if cursor < end and tokens[cursor].text == "?":
+        cursor += 1
+    return bool(parts) and parts[-1] in type_names and cursor == end
 
 
 def _matching_token_before(
@@ -2422,6 +2485,7 @@ def _assignment_target(tokens: Sequence[Token], equal_index: int) -> str:
 
 
 def _collection_expression_after(
+    item: _SourceFile,
     tokens: Sequence[Token],
     start: int,
     collections: frozenset[str],
@@ -2439,13 +2503,11 @@ def _collection_expression_after(
         return True
     if name in collection_factories:
         return start + 1 < len(tokens) and tokens[start + 1].text == "("
-    if name not in _ENTITY_COLLECTION_TYPES:
-        return False
     if start + 1 >= len(tokens) or tokens[start + 1].text != "<":
         return False
     close = _matching_token(tokens, start + 1, "<", ">")
     return close is not None and _direct_entity_type_argument(
-        tokens, start + 2, close, entity
+        item, tokens, start + 2, close, entity
     )
 
 
@@ -2470,7 +2532,7 @@ def _entity_expression_after(
     if name in variables:
         return True
     if _collection_chain_returns_entity(
-        tokens, start, collections, collection_factories
+        tokens, start, collections, collection_factories, frozenset()
     ):
         return True
     parts: list[str] = []
@@ -2518,7 +2580,12 @@ def _entity_expression_before(
         return True
     start = _receiver_expression_start(tokens, end)
     if start is not None and _collection_chain_returns_entity(
-        tokens, start, collections, collection_factories, end=end
+        tokens, start, collections, collection_factories,
+        _entity_collection_symbols(item, tokens, entity).wrapper_names_at(end), end=end
+    ):
+        return True
+    if start is not None and _contains_entity_cast(
+        item, tokens, start, end, entity
     ):
         return True
     if last.text != ")":
@@ -2541,6 +2608,37 @@ def _entity_expression_before(
     ) or _factory_available(item, callable_name, factory_keys)
 
 
+def _contains_entity_cast(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    start: int,
+    end: int,
+    entity: EntityModel,
+) -> bool:
+    """Fail closed for an explicit Java/Kotlin cast to this Entity.
+
+    This is intentionally a narrow syntactic proof, not a full type resolver.
+    If a cast identifies the Entity, retaining the old API is safer than
+    making a type/signature edit based on incomplete source analysis.
+    """
+    type_names = _entity_type_names(item, entity)
+    for cursor in range(start, end):
+        if tokens[cursor].text == "(":
+            close = _matching_token(tokens, cursor, "(", ")")
+            if close is not None and close <= end and _exact_entity_type_reference(
+                tokens, cursor + 1, close, type_names
+            ):
+                return True
+        if item.language == "kotlin" and _identifier(tokens[cursor]) == "as":
+            type_end = next((
+                index for index in range(cursor + 1, end + 1)
+                if tokens[index].text in {")", "]", "}", ".", "?", "!", ",", ";"}
+            ), end + 1)
+            if _exact_entity_type_reference(tokens, cursor + 1, type_end, type_names):
+                return True
+    return False
+
+
 def _receiver_expression_start(tokens: Sequence[Token], end: int) -> int | None:
     depth = 0
     for cursor in range(end, -1, -1):
@@ -2561,6 +2659,7 @@ def _collection_chain_returns_entity(
     start: int,
     collections: frozenset[str],
     collection_factories: frozenset[str],
+    generic_wrappers: frozenset[str],
     *,
     end: int | None = None,
 ) -> bool:
@@ -2581,6 +2680,7 @@ def _collection_chain_returns_entity(
             return False
         cursor = close + 1
     collection_state = True
+    wrapper_state = name in generic_wrappers
     iterator_state = False
     while cursor < limit:
         if tokens[cursor].text == "[":
@@ -2609,7 +2709,8 @@ def _collection_chain_returns_entity(
             and cursor < limit
             and tokens[cursor].text == "{"
         ):
-            return False
+            if not (collection_state and wrapper_state):
+                return False
         if cursor < limit and tokens[cursor].text == "{":
             lambda_close = _matching_token(tokens, cursor, "{", "}")
             if lambda_close is None or lambda_close >= limit:
@@ -2627,8 +2728,45 @@ def _collection_chain_returns_entity(
             "filter", "filterNot", "subList",
         }:
             continue
+        if collection_state and wrapper_state:
+            return _entity_member_chain_end(tokens, cursor, limit, end)
         return False
     return False
+
+
+def _entity_member_chain_end(
+    tokens: Sequence[Token], cursor: int, limit: int, end: int | None
+) -> bool:
+    """Whether a direct-generic receiver has been unwrapped to its Entity.
+
+    A generic class may expose its direct ``T`` through an arbitrary method or
+    Kotlin property (``Optional<Employee>.orElseThrow()``,
+    ``Box<Employee>.value``).  We cannot prove which members do that without a
+    compiler type model.  For an API-changing Entity merge, conservatively
+    treat the first member after a direct generic receiver as an unwrap; if the
+    next member is the affected Entity member, block the change.  Nested
+    generic arguments remain excluded by ``_direct_entity_type_argument``.
+    """
+    if end is None:
+        return True
+    if cursor == limit:
+        return True
+    while cursor < limit and tokens[cursor].text in {"?", "!"}:
+        cursor += 1
+    if cursor >= limit or tokens[cursor].text != ".":
+        return False
+    cursor += 1
+    if cursor >= limit or not _identifier(tokens[cursor]):
+        return False
+    cursor += 1
+    if cursor < limit and tokens[cursor].text == "(":
+        close = _matching_token(tokens, cursor, "(", ")")
+        if close is None or close >= limit:
+            return False
+        cursor = close + 1
+    while cursor < limit and tokens[cursor].text in {"?", "!"}:
+        cursor += 1
+    return cursor == limit
 
 
 def _has_typed_member_reference(
@@ -3325,6 +3463,28 @@ def _validate_primary_key(
         seen_columns.add(column)
         result.append(raw)
     return tuple(result)
+
+
+def _reference_source_roots(
+    project_root: Path, selected_roots: Sequence[Path]
+) -> tuple[Path, ...]:
+    """Include conventional compiled test roots in the reference-only scan.
+
+    The selected ``src/main`` roots remain the only Entity merge targets.  Test
+    source sets are nevertheless compiled by Gradle's clean build and can bind
+    an Entity accessor, so excluding them would make a proposed API change
+    unsafe.  Keep the discovery inside ``src`` and list only conventional
+    source-set names; generated output under ``build`` is never a reference.
+    """
+    roots = list(selected_roots)
+    src = project_root / "src"
+    for source_set in ("test", "integrationTest", "functionalTest", "testFixtures"):
+        for language in ("java", "kotlin"):
+            candidate = src / source_set / language
+            if candidate.is_dir() and candidate not in roots:
+                _reject_symlink_components(project_root, candidate)
+                roots.append(candidate)
+    return tuple(roots)
 
 
 def _collect_sources(

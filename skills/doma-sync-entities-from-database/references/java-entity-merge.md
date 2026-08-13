@@ -47,7 +47,14 @@ Reference analysis includes Java direct fields/getters/setters and Kotlin calls
 or callable references to the generated JVM accessors, including qualified,
 parenthesized, factory-returned, inferred Entity, and common generic collection
 extraction chains such as `get(index)`, `subList(...).get(index)`, and
-`iterator().next()` Entity receivers. A proven use
+`iterator().next()` Entity receivers. It scans the selected production roots
+plus conventional compiled `src/test`, `src/integrationTest`,
+`src/functionalTest`, and `src/testFixtures` Java/Kotlin roots when present.
+It recognizes exact imports, qualified names, casts, and direct generic Entity
+arguments (for example `Map<String, Employee>`); uncertain receiver typing is
+not proof that an API-changing edit is safe. A direct generic Entity wrapper
+is conservatively treated as an Entity receiver after one terminal unwrap
+method/property (such as `Optional<Employee>.orElseThrow()`). A proven use
 makes the finding `BLOCKED` and editless.
 
 ## Fail-Closed Java Constructs
