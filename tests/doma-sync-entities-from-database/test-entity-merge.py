@@ -2594,6 +2594,20 @@ class EntityMergeTests(unittest.TestCase):
                 "import static probe.Provider.load;\n"
                 "class Use { Integer use() { return load().getId(); } }\n",
             ),
+            (
+                "static-imported-provider-method-explicit-generic",
+                "package consumer;\n"
+                "import example.entity.Employee;\n"
+                "import static probe.Provider.load;\n"
+                "class Use { Integer use() { return <Employee>load().getId(); } }\n",
+            ),
+            (
+                "static-imported-provider-method-explicit-fq-generic",
+                "package consumer;\n"
+                "import static probe.Provider.load;\n"
+                "class Use { Integer use() { return "
+                "<example.entity.Employee>load().getId(); } }\n",
+            ),
         )
         for label, consumer_source in cases:
             with self.subTest(reference=label):
@@ -2677,6 +2691,13 @@ class EntityMergeTests(unittest.TestCase):
                 "import static probe.Provider.load;\n"
                 "class Use { Integer use() { return load().getId(); } }\n",
             ),
+            (
+                "static-imported-provider-method-explicit-generic",
+                "package consumer;\n"
+                "import example.entity.Employee;\n"
+                "import static probe.Provider.load;\n"
+                "class Use { Integer use() { return <Employee>load().getId(); } }\n",
+            ),
         )
         for label, consumer_source in cases:
             with self.subTest(reference=label):
@@ -2755,6 +2776,20 @@ class EntityMergeTests(unittest.TestCase):
                 "class Use { Integer use() { return probe.Provider.<example.entity.Employee>load().get(0).getId(); } }\n",
             ),
             (
+                "static-imported-list-provider-explicit-generic",
+                "package consumer;\n"
+                "import example.entity.Employee;\n"
+                "import static probe.Provider.load;\n"
+                "class Use { Integer use() { return <Employee>load().get(0).getId(); } }\n",
+            ),
+            (
+                "static-imported-list-provider-explicit-fq-generic",
+                "package consumer;\n"
+                "import static probe.Provider.load;\n"
+                "class Use { Integer use() { return "
+                "<example.entity.Employee>load().get(0).getId(); } }\n",
+            ),
+            (
                 "imported-box-provider",
                 "package consumer;\n"
                 "import probe.Provider;\n"
@@ -2776,6 +2811,20 @@ class EntityMergeTests(unittest.TestCase):
                 "fully-qualified-box-provider-explicit-generic",
                 "package consumer;\n"
                 "class Use { Integer use() { return probe.Provider.<example.entity.Employee>load().value().getId(); } }\n",
+            ),
+            (
+                "static-imported-box-provider-explicit-generic",
+                "package consumer;\n"
+                "import example.entity.Employee;\n"
+                "import static probe.Provider.load;\n"
+                "class Use { Integer use() { return <Employee>load().value().getId(); } }\n",
+            ),
+            (
+                "static-imported-box-provider-explicit-fq-generic",
+                "package consumer;\n"
+                "import static probe.Provider.load;\n"
+                "class Use { Integer use() { return "
+                "<example.entity.Employee>load().value().getId(); } }\n",
             ),
         )
         for label, consumer_source in cases:

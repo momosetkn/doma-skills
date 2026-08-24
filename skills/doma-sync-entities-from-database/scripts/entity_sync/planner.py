@@ -2479,18 +2479,52 @@ def _factory_available(
 
 def _java_factory_explicit_call(name: str) -> tuple[tuple[str, ...] | None, str]:
     """Split ``Provider.<Employee>load`` into arguments and base name."""
-    marker = name.find(".<")
+    marker = 0 if name.startswith("<") else name.find(".<")
     if marker < 0:
         return None, name
-    open_index = marker + 1
-    close_index = name.find(">", open_index + 1)
-    if close_index < 0:
+    open_index = marker if marker == 0 else marker + 1
+    depth = 0
+    close_index: int | None = None
+    for index in range(open_index, len(name)):
+        if name[index] == "<":
+            depth += 1
+        elif name[index] == ">":
+            depth -= 1
+            if depth == 0:
+                close_index = index
+                break
+            if depth < 0:
+                return None, name
+    if close_index is None:
         return None, name
     raw = name[open_index + 1:close_index]
-    arguments = tuple(part.strip() for part in raw.split(",") if part.strip())
+    arguments: list[str] = []
+    argument_start = 0
+    depth = 0
+    for index, char in enumerate(raw):
+        if char == "<":
+            depth += 1
+        elif char == ">":
+            depth -= 1
+            if depth < 0:
+                return None, name
+        elif char == "," and depth == 0:
+            argument = raw[argument_start:index].strip()
+            if not argument:
+                return None, name
+            arguments.append(argument)
+            argument_start = index + 1
+    if depth != 0:
+        return None, name
+    argument = raw[argument_start:].strip()
+    if argument:
+        arguments.append(argument)
     if not arguments:
         return None, name
-    return arguments, name[:marker] + "." + name[close_index + 1:]
+    base_name = name[close_index + 1:]
+    if marker:
+        base_name = name[:marker] + "." + base_name
+    return tuple(arguments), base_name
 
 
 def _java_explicit_type_arguments_entity_state(
@@ -3675,12 +3709,16 @@ def _callable_name_before(tokens: Sequence[Token], terminal_index: int) -> str:
     explicit_type_arguments = ""
     if cursor >= 0 and tokens[cursor].text == ">":
         type_open = _matching_token_before(tokens, cursor, "<", ">")
-        if (
-            type_open is None
-            or type_open == 0
-            or tokens[type_open - 1].text != "."
-        ):
+        if type_open is None:
             return ""
+        if type_open > 0 and tokens[type_open - 1].text != ".":
+            if tokens[type_open - 1].text not in {
+                "(", "[", "{", ",", ";", ":", "=", "?",
+                "->", "return", "throw", "yield", "case", "default",
+                "+", "-", "*", "/", "%", "&&", "||", "!", "~", "&", "|",
+                "^", "==", "!=", "instanceof",
+            }:
+                return ""
         explicit_type_arguments = "<" + "".join(
             token.text for token in tokens[type_open + 1:cursor]
         ) + ">"
@@ -3693,8 +3731,11 @@ def _callable_name_before(tokens: Sequence[Token], terminal_index: int) -> str:
         cursor -= 2
     result = ".".join(part for part in parts if part)
     if explicit_type_arguments:
-        owner, method = result.rsplit(".", 1)
-        result = owner + "." + explicit_type_arguments + method
+        if "." in result:
+            owner, method = result.rsplit(".", 1)
+            result = owner + "." + explicit_type_arguments + method
+        else:
+            result = explicit_type_arguments + result
     return result
 
 
@@ -3762,7 +3803,21 @@ def _collection_chain_returns_entity(
     cursor = start + 1
     qualified_name = name
     explicit_type_arguments: tuple[str, ...] | None = None
-    if name not in collections:
+    if tokens[start].text == "<":
+        type_close = _matching_token(tokens, start, "<", ">")
+        if (
+            type_close is None
+            or type_close + 1 >= limit
+            or not _identifier(tokens[type_close + 1])
+        ):
+            return False
+        explicit_type_arguments = tuple(
+            token.text for token in tokens[start + 1:type_close]
+        )
+        name = _identifier(tokens[type_close + 1])
+        qualified_name = name
+        cursor = type_close + 2
+    elif name not in collections:
         while (
             cursor + 1 < limit
             and tokens[cursor].text == "."
