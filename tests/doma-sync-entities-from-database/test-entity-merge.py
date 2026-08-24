@@ -2632,6 +2632,77 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("BLOCKED", type_findings[0].status)
                 self.assertFalse(type_findings[0].edits)
 
+    def test_java_mixed_factory_overloads_block_cross_package_calls(self) -> None:
+        cases = (
+            (
+                "fully-qualified-provider-class",
+                "package consumer;\n"
+                "class Use { Integer use() { return probe.Provider.load().getId(); } }\n",
+            ),
+            (
+                "imported-provider-class",
+                "package consumer;\n"
+                "import probe.Provider;\n"
+                "class Use { Integer use() { return Provider.load().getId(); } }\n",
+            ),
+            (
+                "static-imported-provider-method",
+                "package consumer;\n"
+                "import static probe.Provider.load;\n"
+                "class Use { Integer use() { return load().getId(); } }\n",
+            ),
+        )
+        for label, consumer_source in cases:
+            with self.subTest(reference=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n"
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Long",
+                        annotations=("@Id",), doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                project.existing_file(java_entity(
+                    fields=(
+                        java_field(
+                            "id", "employee_id", annotations=("@Id",),
+                            doc="/** Employee ID */",
+                        )
+                        + java_field("legacy", "legacy")
+                    ),
+                    methods=java_accessors("id") + java_accessors("legacy"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                provider = project.root / "src/main/java/probe/Provider.java"
+                provider.parent.mkdir(parents=True, exist_ok=True)
+                provider.write_text(
+                    "package probe;\n"
+                    "import example.entity.Employee;\n"
+                    "public class Provider {\n"
+                    "    public static Employee load() { return new Employee(); }\n"
+                    "    public static String load(int x) { return String.valueOf(x); }\n"
+                    "}\n"
+                )
+                consumer = project.root / "src/main/java/consumer/Use.java"
+                consumer.parent.mkdir(parents=True, exist_ok=True)
+                consumer.write_text(consumer_source)
+
+                plan = project.plan(language="java")
+                type_findings = [
+                    item for item in plan.findings
+                    if item.kind in {"widen-basic-type", "narrow-basic-type"}
+                ]
+                self.assertEqual(["narrow-basic-type"], [item.kind for item in type_findings])
+                self.assertEqual("BLOCKED", type_findings[0].status)
+                self.assertFalse(type_findings[0].edits)
+
     def test_kotlin_project_wrapper_factories_fail_closed_for_alias_imports_and_generic_typealiases(self) -> None:
         cases = (
             (

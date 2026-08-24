@@ -2215,8 +2215,9 @@ def _java_entity_factory_keys(
     A bare method name is not enough to resolve a Java call: unrelated classes
     may expose the same method, and overloads may return different types.
     Retain every project-local declaration for a class/method pair, marking
-    only an exact Entity return as true; resolution rejects a pair containing
-    any non-Entity overload.
+    exact Entity returns for diagnostics. Resolution treats a visible pair
+    containing any return type as external evidence because overload
+    resolution is outside this source scanner.
     """
     result: set[tuple[str, str, bool]] = set()
     entity_fqcn = (entity.package_name + "." if entity.package_name else "") + entity.class_name
@@ -2302,7 +2303,13 @@ def _factory_available(
                     )
                 )
             }
-        return bool(candidates) and all(key[2] for key in candidates)
+        # Once a project-local factory is visible, do not treat an overload
+        # set with a non-Entity/unknown return as proof that the call is safe.
+        # The source scanner cannot perform Java overload resolution, so any
+        # matching declaration is external evidence and must block a
+        # potentially destructive Entity change.  Only an empty candidate set
+        # means that no factory evidence exists.
+        return bool(candidates)
     parts = name.split(".")
     if len(parts) > 1:
         return (".".join(parts[:-1]), parts[-1]) in factory_keys
