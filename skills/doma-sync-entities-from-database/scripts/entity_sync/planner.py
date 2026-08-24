@@ -2663,22 +2663,37 @@ def _factory_available(
                     if not imported.startswith("static.")
                 ),
             }
-            candidates = {
-                key for key in java_keys
-                if key[1] == method_name
-                and (
-                    key[0] == class_name
-                    or (
-                        "." not in class_name
-                        and key[0].rsplit(".", 1)[-1] == class_name
-                        and (
-                            key[0] in visible_types
-                            or _source_package(item) == key[0].rsplit(".", 1)[0]
-                            or key[0].rsplit(".", 1)[0] + ".*" in imports
+            receiver_types = _java_qualified_receiver_types(
+                item, class_name, hierarchy_types
+            )
+            if len(receiver_types) == 1:
+                receiver_type = next(iter(receiver_types))
+                visible_declaring_types = _java_visible_declaring_types(
+                    receiver_type, hierarchy_types, hierarchy_parents,
+                    hierarchy_invalid,
+                )
+                candidates = {
+                    key for key in java_keys
+                    if key[1] == method_name
+                    and key[0] in visible_declaring_types
+                }
+            else:
+                candidates = {
+                    key for key in java_keys
+                    if key[1] == method_name
+                    and (
+                        key[0] == class_name
+                        or (
+                            "." not in class_name
+                            and key[0].rsplit(".", 1)[-1] == class_name
+                            and (
+                                key[0] in visible_types
+                                or _source_package(item) == key[0].rsplit(".", 1)[0]
+                                or key[0].rsplit(".", 1)[0] + ".*" in imports
+                            )
                         )
                     )
-                )
-            }
+                }
         # Once a project-local factory is visible, do not treat an overload
         # set with a non-Entity/unknown return as proof that the call is safe.
         # The source scanner cannot perform Java overload resolution, so any
@@ -2759,6 +2774,28 @@ def _java_visible_declaring_types(
     if not visit(declaring_type):
         return frozenset({declaring_type})
     return frozenset(visible)
+
+
+def _java_qualified_receiver_types(
+    item: _SourceFile,
+    class_name: str,
+    hierarchy_types: frozenset[str],
+) -> frozenset[str]:
+    """Resolve a qualified class receiver to one project-local source type."""
+    if class_name in hierarchy_types:
+        return frozenset({class_name})
+    if "." in class_name:
+        return frozenset()
+    imports = _source_imports(item)
+    return frozenset(
+        candidate for candidate in hierarchy_types
+        if candidate.rsplit(".", 1)[-1] == class_name
+        and (
+            candidate.rsplit(".", 1)[0] == _source_package(item)
+            or candidate in imports
+            or candidate.rsplit(".", 1)[0] + ".*" in imports
+        )
+    )
 
 
 def _java_declaring_type_at(
@@ -3349,6 +3386,7 @@ def _entity_collection_factory_keys(
     for item in files:
         tokens = _code_tokens(item)
         if item.language == "java":
+            result.update(_java_hierarchy_keys(files))
             result.update(_java_entity_collection_factory_keys(item, tokens, entity))
             continue
         if item.language != "kotlin":
@@ -3588,23 +3626,34 @@ def _available_entity_collection_factories(
             return {}
         imports = _source_imports(item)
         static_imports = _java_static_imports(item)
+        hierarchy_types, hierarchy_parents, hierarchy_invalid = _java_hierarchy_context(
+            frozenset(factories)
+        )
         visible: dict[str, set[tuple[str, bool, bool]]] = {}
         for key in factories:
             if len(key) != 4:
                 continue
             declaring_type, name, wrapper, direct = key
-            fq_name = declaring_type + "." + name
-            candidate = (fq_name, wrapper, direct)
-            # A fully-qualified project-local call does not require an import.
-            visible.setdefault(fq_name, set()).add(candidate)
-            class_name = declaring_type.rsplit(".", 1)[-1]
-            declaring_package = declaring_type.rsplit(".", 1)[0] if "." in declaring_type else ""
-            if (
-                declaring_type in imports
-                or declaring_package == _source_package(item)
-                or declaring_package + ".*" in imports
-            ):
-                visible.setdefault(class_name + "." + name, set()).add(candidate)
+            receiver_types = {declaring_type}
+            for receiver_type in hierarchy_types:
+                if declaring_type in _java_visible_declaring_types(
+                    receiver_type, hierarchy_types, hierarchy_parents,
+                    hierarchy_invalid,
+                ):
+                    receiver_types.add(receiver_type)
+            for receiver_type in receiver_types:
+                fq_name = receiver_type + "." + name
+                candidate = (fq_name, wrapper, direct)
+                # A fully-qualified project-local call does not require an import.
+                visible.setdefault(fq_name, set()).add(candidate)
+                class_name = receiver_type.rsplit(".", 1)[-1]
+                receiver_package = receiver_type.rsplit(".", 1)[0] if "." in receiver_type else ""
+                if (
+                    receiver_type in imports
+                    or receiver_package == _source_package(item)
+                    or receiver_package + ".*" in imports
+                ):
+                    visible.setdefault(class_name + "." + name, set()).add(candidate)
             if (
                 declaring_type + "." + name in static_imports
                 or declaring_type + ".*" in static_imports

@@ -3060,6 +3060,73 @@ class EntityMergeTests(unittest.TestCase):
         self.assertEqual("BLOCKED", type_findings[0].status)
         self.assertFalse(type_findings[0].edits)
 
+    def test_java_qualified_subclass_generic_factory_inherited_from_superclass_blocks_entity_type_changes(self) -> None:
+        cases = (
+            (
+                "direct",
+                "    public static <T> T load() { return null; }\n",
+                "return Use.<Employee>load().getId();",
+                "",
+            ),
+            (
+                "list",
+                "    public static <T> List<T> load() { return List.of(); }\n",
+                "return Use.<Employee>load().get(0).getId();",
+                "import java.util.List;\n",
+            ),
+            (
+                "box",
+                "    public static <T> Box<T> load() { return new Box<>(); }\n",
+                "return Use.<Employee>load().value().getId();",
+                "",
+            ),
+        )
+        for label, declaration, expression, imports in cases:
+            with self.subTest(reference=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+                project.generated_file().write_text(java_entity(
+                    fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                project.existing_file(java_entity(
+                    fields=java_field("id", "employee_id", annotations=("@Id",)),
+                    methods=java_accessors("id"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                base = project.root / "src/main/java/consumer/Base.java"
+                base.parent.mkdir(parents=True, exist_ok=True)
+                base.write_text(
+                    "package consumer;\n"
+                    + imports
+                    + "class Box<T> { T value() { return null; } }\n"
+                    + "public class Base {\n"
+                    + declaration
+                    + "}\n",
+                    encoding="utf-8",
+                )
+                use = project.root / "src/main/java/consumer/Use.java"
+                use.write_text(
+                    "package consumer;\n"
+                    "import example.entity.Employee;\n"
+                    "class Use extends Base {\n"
+                    "    Integer use() { "
+                    + expression
+                    + " }\n"
+                    "}\n",
+                    encoding="utf-8",
+                )
+
+                plan = project.plan(language="java")
+                type_findings = [item for item in plan.findings if item.kind in {"widen-basic-type", "narrow-basic-type"}]
+                self.assertEqual(["narrow-basic-type"], [item.kind for item in type_findings])
+                self.assertEqual("BLOCKED", type_findings[0].status)
+                self.assertFalse(type_findings[0].edits)
+
     def test_java_this_generic_factory_inherited_from_interface_default_blocks_entity_type_changes(self) -> None:
         project = ProjectFixture(self)
         project.retain_snapshot_columns("employee_id")
