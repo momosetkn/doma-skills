@@ -3408,11 +3408,30 @@ def _entity_expression_before(
 
 
 def _callable_name_before(tokens: Sequence[Token], terminal_index: int) -> str:
-    """Return a dotted callable path ending at ``terminal_index``."""
+    """Return a dotted callable path ending at ``terminal_index``.
+
+    Java permits explicit method type arguments between a receiver and the
+    method name (``Provider.<Employee>load()``).  Skip that balanced region so
+    factory resolution still sees the declaring class and can apply its normal
+    visibility and overload checks.  An unmatched ``>`` is treated as unknown
+    rather than guessing at a callable path.
+    """
     if terminal_index < 0:
         return ""
-    parts = [_identifier(tokens[terminal_index])]
+    terminal_name = _identifier(tokens[terminal_index])
+    if not terminal_name:
+        return ""
+    parts = [terminal_name]
     cursor = terminal_index - 1
+    if cursor >= 0 and tokens[cursor].text == ">":
+        type_open = _matching_token_before(tokens, cursor, "<", ">")
+        if (
+            type_open is None
+            or type_open == 0
+            or tokens[type_open - 1].text != "."
+        ):
+            return ""
+        cursor = type_open - 1
     while cursor >= 1 and tokens[cursor].text == ".":
         previous = _identifier(tokens[cursor - 1])
         if not previous:

@@ -2576,6 +2576,19 @@ class EntityMergeTests(unittest.TestCase):
                 "class Use { Integer use() { return Provider.load().getId(); } }\n",
             ),
             (
+                "imported-provider-class-explicit-generic",
+                "package consumer;\n"
+                "import example.entity.Employee;\n"
+                "import probe.Provider;\n"
+                "class Use { Integer use() { return Provider.<Employee>load().getId(); } }\n",
+            ),
+            (
+                "fully-qualified-provider-class-explicit-generic",
+                "package consumer;\n"
+                "class Use { Integer use() { return "
+                "probe.Provider.<example.entity.Employee>load().getId(); } }\n",
+            ),
+            (
                 "static-imported-provider-method",
                 "package consumer;\n"
                 "import static probe.Provider.load;\n"
@@ -2644,6 +2657,19 @@ class EntityMergeTests(unittest.TestCase):
                 "package consumer;\n"
                 "import probe.Provider;\n"
                 "class Use { Integer use() { return Provider.load().getId(); } }\n",
+            ),
+            (
+                "imported-provider-class-explicit-generic",
+                "package consumer;\n"
+                "import example.entity.Employee;\n"
+                "import probe.Provider;\n"
+                "class Use { Integer use() { return Provider.<Employee>load().getId(); } }\n",
+            ),
+            (
+                "fully-qualified-provider-class-explicit-generic",
+                "package consumer;\n"
+                "class Use { Integer use() { return "
+                "probe.Provider.<example.entity.Employee>load().getId(); } }\n",
             ),
             (
                 "static-imported-provider-method",
