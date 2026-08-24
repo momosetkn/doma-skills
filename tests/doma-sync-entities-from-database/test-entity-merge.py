@@ -2646,6 +2646,183 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("BLOCKED", finding.status)
                 self.assertFalse(finding.edits)
 
+    def test_kotlin_qualified_factories_and_class_alias_callable_references_block_type_change(self) -> None:
+        cases = (
+            (
+                "qualified-wrapper-factory-call",
+                {
+                    "probe/Factory.kt": (
+                        "package probe\n"
+                        "import example.entity.Employee\n"
+                        "class Box<T>(val value: T)\n"
+                        "fun make(): probe.Box<Employee> = TODO()\n"
+                    ),
+                    "example/entity/Use.kt": (
+                        "package example.entity\n"
+                        "fun use(): Int = probe.make().value.id\n"
+                    ),
+                },
+            ),
+            (
+                "qualified-entity-factory-call",
+                {
+                    "probe/Factory.kt": (
+                        "package probe\n"
+                        "import example.entity.Employee\n"
+                        "fun make(): Employee = Employee()\n"
+                    ),
+                    "example/entity/Use.kt": (
+                        "package example.entity\n"
+                        "fun use(): Int = probe.make().id\n"
+                    ),
+                },
+            ),
+            (
+                "class-import-alias-method-reference",
+                {
+                    "example/entity/Use.kt": (
+                        "package example.entity\n"
+                        "import example.entity.Employee as Staff\n"
+                        "val f: (Employee) -> Int = Staff::getId\n"
+                    ),
+                },
+            ),
+            (
+                "class-import-alias-property-reference",
+                {
+                    "example/entity/Use.kt": (
+                        "package example.entity\n"
+                        "import example.entity.Employee as Staff\n"
+                        "val f: (Employee) -> Int = Staff::id\n"
+                    ),
+                },
+            ),
+        )
+        for label, probes in cases:
+            with self.subTest(reference=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+                snapshot["tables"][0]["columns"][0].update({
+                    "jdbc_type": -5, "type_name": "int8", "size": 64,
+                    "scale": 0, "auto_increment": False,
+                })
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Long",
+                        annotations=("@Id",), doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                project.existing_file(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Integer",
+                        annotations=("@Id",), doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Integer"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                kotlin_root = project.root / "src/main/kotlin"
+                for relative, probe in probes.items():
+                    path = kotlin_root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(probe, encoding="utf-8")
+
+                plan = build_plan(
+                    project.root, project.snapshot, project.generated,
+                    (project.existing, kotlin_root), "java",
+                )
+                finding = next(
+                    item for item in plan.findings
+                    if item.kind in {"widen-basic-type", "narrow-basic-type"}
+                )
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
+
+    def test_kotlin_cross_file_collection_factories_block_type_change(self) -> None:
+        cases = (
+            (
+                "qualified-list-factory",
+                {
+                    "probe/Factory.kt": (
+                        "package probe\n"
+                        "import example.entity.Employee\n"
+                        "fun make(): List<Employee> = TODO()\n"
+                    ),
+                    "example/entity/Use.kt": (
+                        "package example.entity\n"
+                        "fun use(): Int = probe.make().first().id\n"
+                    ),
+                },
+            ),
+            (
+                "imported-generic-collection-alias-factory",
+                {
+                    "probe/Factory.kt": (
+                        "package probe\n"
+                        "import example.entity.Employee\n"
+                        "typealias Alias<T> = List<T>\n"
+                        "fun make(): Alias<Employee> = TODO()\n"
+                    ),
+                    "example/entity/Use.kt": (
+                        "package example.entity\n"
+                        "import probe.make\n"
+                        "fun use(): Int = make().first().id\n"
+                    ),
+                },
+            ),
+        )
+        for label, probes in cases:
+            with self.subTest(reference=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+                snapshot["tables"][0]["columns"][0].update({
+                    "jdbc_type": -5, "type_name": "int8", "size": 64,
+                    "scale": 0, "auto_increment": False,
+                })
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Long",
+                        annotations=("@Id",), doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ), encoding="utf-8")
+                project.existing_file(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Integer",
+                        annotations=("@Id",), doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Integer"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                kotlin_root = project.root / "src/main/kotlin"
+                for relative, probe in probes.items():
+                    path = kotlin_root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(probe, encoding="utf-8")
+
+                plan = build_plan(
+                    project.root, project.snapshot, project.generated,
+                    (project.existing, kotlin_root), "java",
+                )
+                finding = next(
+                    item for item in plan.findings
+                    if item.kind in {"widen-basic-type", "narrow-basic-type"}
+                )
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertFalse(finding.edits)
+
     def test_generic_collection_get_receivers_block_java_and_kotlin_member_changes(self) -> None:
         compile_temp = tempfile.TemporaryDirectory(prefix="entity-receiver-javac-")
         self.addCleanup(compile_temp.cleanup)
