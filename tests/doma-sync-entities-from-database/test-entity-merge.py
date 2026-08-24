@@ -2659,6 +2659,158 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("BLOCKED", type_findings[0].status)
                 self.assertFalse(type_findings[0].edits)
 
+    def test_java_wildcard_static_import_factory_calls_block_type_changes(self) -> None:
+        project = ProjectFixture(self)
+        candidate = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+        candidate = candidate.replace("String displayName", "Long displayName").replace(
+            "public String getDisplayName()", "public Long getDisplayName()"
+        ).replace("setDisplayName(String displayName)", "setDisplayName(Long displayName)")
+        existing = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+        existing = existing.replace("String displayName", "Integer displayName").replace(
+            "public String getDisplayName()", "public Integer getDisplayName()"
+        ).replace("setDisplayName(String displayName)", "setDisplayName(Integer displayName)")
+        project.generated_file().write_text(candidate)
+        project.existing_file(existing)
+        provider = project.root / "src/main/java/probe/Provider.java"
+        provider.parent.mkdir(parents=True, exist_ok=True)
+        provider.write_text(
+            "package probe;\n"
+            "import example.entity.Employee;\n"
+            "public class Provider {\n"
+            "    public static Employee load() { return new Employee(); }\n"
+            "}\n"
+        )
+        consumer = project.root / "src/main/java/consumer/Use.java"
+        consumer.parent.mkdir(parents=True, exist_ok=True)
+        consumer.write_text(
+            "package consumer;\n"
+            "import static probe.Provider.*;\n"
+            "class Use { Integer use() { return load().getDisplayName().length(); } }\n"
+        )
+
+        plan = project.plan(language="java")
+        finding = next(
+            item for item in plan.findings
+            if item.column == "display_name"
+            and item.kind in {"widen-basic-type", "narrow-basic-type"}
+        )
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertEqual("narrow-basic-type", finding.kind)
+        self.assertFalse(finding.edits)
+
+    def test_java_unqualified_local_and_inherited_factory_calls_block_type_changes(self) -> None:
+        cases = (
+            (
+                "local-direct",
+                "class Use {\n"
+                "    Employee load() { return null; }\n"
+                "    Integer use() { return load().getDisplayName().length(); }\n"
+                "}\n",
+                "",
+            ),
+            (
+                "inherited-direct",
+                "class Use extends Base {\n"
+                "    Integer use() { return load().getDisplayName().length(); }\n"
+                "}\n",
+                "class Base { Employee load() { return null; } }\n",
+            ),
+        )
+        for label, use_source, base_source in cases:
+            with self.subTest(reference=label):
+                project = ProjectFixture(self)
+                candidate = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+                candidate = candidate.replace("String displayName", "Long displayName").replace(
+                    "public String getDisplayName()", "public Long getDisplayName()"
+                ).replace("setDisplayName(String displayName)", "setDisplayName(Long displayName)")
+                existing = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+                existing = existing.replace("String displayName", "Integer displayName").replace(
+                    "public String getDisplayName()", "public Integer getDisplayName()"
+                ).replace("setDisplayName(String displayName)", "setDisplayName(Integer displayName)")
+                project.generated_file().write_text(candidate)
+                project.existing_file(existing)
+                source = project.root / "src/main/java/consumer/Use.java"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(
+                    "package consumer;\n"
+                    "import example.entity.Employee;\n"
+                    + base_source
+                    + use_source
+                )
+                unrelated = project.root / "src/main/java/other/Unrelated.java"
+                unrelated.parent.mkdir(parents=True, exist_ok=True)
+                unrelated.write_text(
+                    "package other;\n"
+                    "import example.entity.Employee;\n"
+                    "class Unrelated { Employee load() { return null; } }\n"
+                )
+
+                plan = project.plan(language="java")
+                finding = next(
+                    item for item in plan.findings
+                    if item.column == "display_name"
+                    and item.kind in {"widen-basic-type", "narrow-basic-type"}
+                )
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertEqual("narrow-basic-type", finding.kind)
+                self.assertFalse(finding.edits)
+
+    def test_java_unqualified_inherited_generic_collection_and_wrapper_factories_block_type_changes(self) -> None:
+        cases = (
+            (
+                "direct",
+                "public <T> T load() { return null; }",
+                "return <Employee>load().getDisplayName().length();",
+                "",
+            ),
+            (
+                "list",
+                "public <T> List<T> load() { return List.of(); }",
+                "return <Employee>load().get(0).getDisplayName().length();",
+                "import java.util.List;\n",
+            ),
+            (
+                "box",
+                "public <T> Box<T> load() { return new Box<>(); }",
+                "return <Employee>load().value().getDisplayName().length();",
+                "",
+            ),
+        )
+        for label, declaration, expression, imports in cases:
+            with self.subTest(reference=label):
+                project = ProjectFixture(self)
+                candidate = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+                candidate = candidate.replace("String displayName", "Long displayName").replace(
+                    "public String getDisplayName()", "public Long getDisplayName()"
+                ).replace("setDisplayName(String displayName)", "setDisplayName(Long displayName)")
+                existing = (FIXTURES / "generated-candidates/java/example/entity/Employee.java").read_text()
+                existing = existing.replace("String displayName", "Integer displayName").replace(
+                    "public String getDisplayName()", "public Integer getDisplayName()"
+                ).replace("setDisplayName(String displayName)", "setDisplayName(Integer displayName)")
+                project.generated_file().write_text(candidate)
+                project.existing_file(existing)
+                source = project.root / "src/main/java/consumer/Use.java"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(
+                    "package consumer;\n"
+                    + imports
+                    + "import example.entity.Employee;\n"
+                    + "class Box<T> { T value() { return null; } }\n"
+                    + "class Base {\n    " + declaration + "\n}\n"
+                    + "class Use extends Base { Integer use() { "
+                    + expression + " } }\n"
+                )
+
+                plan = project.plan(language="java")
+                finding = next(
+                    item for item in plan.findings
+                    if item.column == "display_name"
+                    and item.kind in {"widen-basic-type", "narrow-basic-type"}
+                )
+                self.assertEqual("BLOCKED", finding.status)
+                self.assertEqual("narrow-basic-type", finding.kind)
+                self.assertFalse(finding.edits)
+
     def test_java_mixed_factory_overloads_block_cross_package_calls(self) -> None:
         cases = (
             (

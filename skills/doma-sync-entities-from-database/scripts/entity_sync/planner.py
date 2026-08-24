@@ -2623,11 +2623,13 @@ def _factory_available(
     *,
     tokens: Sequence[Token] | None = None,
     receiver_position: int | None = None,
+    collection_factory_keys: frozenset[tuple[str, ...]] = frozenset(),
 ) -> bool:
     if item.language == "java":
         explicit_args, base_name = _java_factory_explicit_call(name)
+        all_factory_keys = factory_keys | collection_factory_keys
         hierarchy_types, hierarchy_parents, hierarchy_invalid = _java_hierarchy_context(
-            factory_keys
+            all_factory_keys
         )
         java_keys = {
             (
@@ -2644,6 +2646,12 @@ def _factory_available(
             if len(key) == 3 and not key[0].startswith("__hierarchy-")
             for declaring_type, method_name, returns_entity in (key,)
         })
+        java_keys.update({
+            (declaring_type, method_name, direct, direct)
+            for key in collection_factory_keys
+            if len(key) == 4 and not key[0].startswith("__hierarchy-")
+            for declaring_type, method_name, _, direct in (key,)
+        })
         parts = base_name.split(".")
         if len(parts) == 1:
             static_imports = _java_static_imports(item)
@@ -2654,11 +2662,25 @@ def _factory_available(
                     key[0] + "." + key[1] in static_imports
                     or any(
                         imported.endswith(".*")
-                        and key[0].startswith(imported[:-2] + ".")
+                        and key[0] == imported[:-2]
                         for imported in static_imports
                     )
                 )
             }
+            if tokens is not None and receiver_position is not None:
+                declaring_type = _java_declaring_type_at(
+                    item, tokens, receiver_position
+                )
+                if declaring_type is not None:
+                    visible_declaring_types = _java_visible_declaring_types(
+                        declaring_type, hierarchy_types, hierarchy_parents,
+                        hierarchy_invalid,
+                    )
+                    candidates.update({
+                        key for key in java_keys
+                        if key[1] == parts[0]
+                        and key[0] in visible_declaring_types
+                    })
         else:
             method_name = parts[-1]
             class_name = ".".join(parts[:-1])
@@ -3073,6 +3095,7 @@ def _typed_entity_variables(
                 collection_symbols.names_at(index), collection_symbols.factories,
                 collection_symbols.wrapper_factories,
                 factory_keys,
+                collection_factory_keys,
             ):
                 result.add(target)
                 changed = True
@@ -4065,6 +4088,7 @@ def _entity_expression_after(
     collection_factories: frozenset[str],
     wrapper_collection_factories: frozenset[str],
     factory_keys: frozenset[tuple[str, str]],
+    collection_factory_keys: frozenset[tuple[str, ...]] = frozenset(),
 ) -> bool:
     while start < len(tokens) and (
         _identifier(tokens[start]) in {"new", "return"}
@@ -4080,6 +4104,8 @@ def _entity_expression_after(
         tokens, start, collections, collection_factories,
         wrapper_collection_factories,
         item=item, entity=entity,
+        factory_keys=factory_keys,
+        collection_factory_keys=collection_factory_keys,
     ):
         return True
     parts: list[str] = []
@@ -4123,6 +4149,7 @@ def _entity_expression_after(
     return _factory_available(
         item, factory_name, factory_keys, entity,
         tokens=tokens, receiver_position=start,
+        collection_factory_keys=collection_factory_keys,
     )
 
 
@@ -4136,6 +4163,7 @@ def _entity_expression_before(
     collection_factories: frozenset[str],
     wrapper_collection_factories: frozenset[str],
     factory_keys: frozenset[tuple[str, str]],
+    collection_factory_keys: frozenset[tuple[str, ...]] = frozenset(),
 ) -> bool:
     if end < 0:
         return False
@@ -4151,6 +4179,8 @@ def _entity_expression_before(
         wrapper_collection_factories,
         item=item, entity=entity,
         end=end,
+        factory_keys=factory_keys,
+        collection_factory_keys=collection_factory_keys,
     ):
         return True
     if start is not None and _contains_entity_cast(
@@ -4182,6 +4212,7 @@ def _entity_expression_before(
         or _factory_available(
             item, callable_name, factory_keys, entity,
             tokens=tokens, receiver_position=end,
+            collection_factory_keys=collection_factory_keys,
         )
     )
 
@@ -4291,6 +4322,8 @@ def _collection_chain_returns_entity(
     item: _SourceFile | None = None,
     entity: EntityModel | None = None,
     end: int | None = None,
+    factory_keys: frozenset[tuple[str, ...]] = frozenset(),
+    collection_factory_keys: frozenset[tuple[str, ...]] = frozenset(),
 ) -> bool:
     limit = len(tokens) if end is None else end + 1
     if start >= limit:
@@ -4341,6 +4374,17 @@ def _collection_chain_returns_entity(
         if declaring_type is not None:
             qualified_name = declaring_type + qualified_name[len("this"):]
     is_factory = qualified_name in collection_factories
+    if (
+        not is_factory
+        and item is not None
+        and entity is not None
+        and item.language == "java"
+    ):
+        is_factory = _factory_available(
+            item, qualified_name, factory_keys, entity,
+            tokens=tokens, receiver_position=start,
+            collection_factory_keys=collection_factory_keys,
+        )
     if (
         is_factory and explicit_type_arguments
         and item is not None and entity is not None
@@ -4482,6 +4526,7 @@ def _has_typed_member_reference(
                 collection_symbols.wrapper_names_at(receiver_end)
                 | collection_symbols.wrapper_factories,
                 factory_keys,
+                collection_factory_keys,
             ):
                 return True
         if index >= 3 and tokens[index - 1].text == ":" and tokens[index - 2].text == ":":
@@ -4496,6 +4541,7 @@ def _has_typed_member_reference(
                 collection_symbols.wrapper_names_at(receiver_end)
                 | collection_symbols.wrapper_factories,
                 factory_keys,
+                collection_factory_keys,
             ) or (
                 receiver in _entity_type_names(item, entity)
                 and _file_resolves_entity(item, entity)
