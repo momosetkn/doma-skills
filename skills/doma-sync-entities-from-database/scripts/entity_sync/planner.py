@@ -2238,12 +2238,16 @@ def _entity_collection_symbols(
     wrapper_factory_keys: frozenset[tuple[str, str]] = frozenset(),
 ) -> _CollectionSymbols:
     imported_typealiases = _available_entity_wrapper_typealiases(item, typealias_keys)
-    if not _file_resolves_entity(item, entity) and not imported_typealiases:
-        return _CollectionSymbols((), frozenset(), frozenset())
-    declarations: list[tuple[str, int, int, bool, bool]] = []
     visible_wrapper_factories = _available_wrapper_factories(
         item, wrapper_factory_keys
     )
+    if (
+        not _file_resolves_entity(item, entity)
+        and not imported_typealiases
+        and not visible_wrapper_factories
+    ):
+        return _CollectionSymbols((), frozenset(), frozenset())
+    declarations: list[tuple[str, int, int, bool, bool]] = []
     factories: set[str] = set(visible_wrapper_factories)
     wrapper_factories: set[str] = set(visible_wrapper_factories)
     typealias_wrappers = {
@@ -2479,6 +2483,11 @@ def _entity_wrapper_factory_keys(
     a call look safe.
     """
     result: set[tuple[str, str]] = set()
+    known_types = frozenset(
+        declaration
+        for source in files
+        for declaration in _top_level_type_declarations(source)
+    )
     for item in files:
         if item.language != "kotlin":
             continue
@@ -2486,8 +2495,6 @@ def _entity_wrapper_factory_keys(
             **_available_entity_wrapper_typealiases(item, typealias_keys),
             **_direct_generic_entity_typealiases(item, _code_tokens(item), entity),
         }
-        if not aliases:
-            continue
         tokens = _code_tokens(item)
         for index, token in enumerate(tokens):
             if _identifier(token) != "fun":
@@ -2503,13 +2510,107 @@ def _entity_wrapper_factory_keys(
                 continue
             if tokens[close_index + 1].text != ":":
                 continue
-            type_name = _identifier(tokens[close_index + 2])
-            if type_name not in aliases:
+            if not _kotlin_factory_return_is_entity_wrapper(
+                item, tokens, close_index + 2, entity, aliases,
+                typealias_keys, known_types,
+            ):
                 continue
             name = _identifier(tokens[open_index - 1]) if open_index else ""
             if name:
                 result.add((_source_package(item), name))
     return frozenset(result)
+
+
+def _kotlin_factory_return_is_entity_wrapper(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    start: int,
+    entity: EntityModel,
+    aliases: dict[str, bool],
+    typealias_keys: frozenset[tuple[str, str, bool]],
+    known_types: frozenset[str],
+) -> bool:
+    """Recognize one project-local Kotlin factory return wrapper.
+
+    A factory is useful across files only when its return type is proven from
+    source in this project.  Parse the complete qualified type path instead of
+    looking only at the first token after ``:``, and inspect exactly one direct
+    generic argument when present.  Unknown dependency types remain absent so
+    an external ``Box<Employee>`` cannot make a type edit appear safe.
+    """
+    if start >= len(tokens):
+        return False
+    cursor = start
+    parts: list[str] = []
+    while cursor < len(tokens):
+        name = _identifier(tokens[cursor])
+        if not name:
+            break
+        parts.append(name)
+        cursor += 1
+        if cursor >= len(tokens) or tokens[cursor].text != ".":
+            break
+        cursor += 1
+    if not parts:
+        return False
+
+    raw_name = ".".join(parts)
+    if _kotlin_wrapper_alias_resolves(
+        raw_name, aliases, typealias_keys
+    ):
+        return True
+    if cursor >= len(tokens) or tokens[cursor].text != "<":
+        return False
+    close = _matching_token(tokens, cursor, "<", ">")
+    if close is None:
+        return False
+    if not _kotlin_project_type_resolves(item, raw_name, known_types):
+        return False
+    return (
+        raw_name.rsplit(".", 1)[-1] not in _ENTITY_COLLECTION_TYPES
+        and _direct_entity_type_argument(item, tokens, cursor + 1, close, entity)
+    )
+
+
+def _kotlin_wrapper_alias_resolves(
+    raw_name: str,
+    aliases: dict[str, bool],
+    typealias_keys: frozenset[tuple[str, str, bool]],
+) -> bool:
+    terminal = raw_name.rsplit(".", 1)[-1]
+    if len(raw_name.split(".")) == 1:
+        return bool(aliases.get(terminal, False))
+    return any(
+        wrapper
+        and (package_name + "." if package_name else "") + alias == raw_name
+        for package_name, alias, wrapper in typealias_keys
+    )
+
+
+def _kotlin_project_type_resolves(
+    item: _SourceFile,
+    raw_name: str,
+    known_types: frozenset[str],
+) -> bool:
+    """Resolve a Kotlin type path against project declarations/imports only."""
+    if raw_name in known_types:
+        return True
+    if "." not in raw_name:
+        package_name = _source_package(item)
+        if (package_name + "." if package_name else "") + raw_name in known_types:
+            return True
+        imports = _source_imports(item)
+        return any(
+            imported in known_types
+            and imported.rsplit(".", 1)[-1] == raw_name
+            for imported in imports
+            if not imported.endswith(".*")
+        ) or any(
+            imported.endswith(".*")
+            and imported[:-2] + "." + raw_name in known_types
+            for imported in imports
+        )
+    return False
 
 
 def _available_wrapper_factories(

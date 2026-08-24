@@ -3310,6 +3310,91 @@ class EntityMergeTests(unittest.TestCase):
         self.assertEqual("BLOCKED", apply_plan(project.root, plan).state)
         self.assertEqual(before, target.read_bytes())
 
+    def test_qualified_alias_wrapper_factory_blocks_type_change(self) -> None:
+        """A qualified project-local alias return keeps wrapper state across files."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ))
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Factory.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias StaffBox = Box<Employee>\n"
+            "fun make(): probe.StaffBox = TODO()\n"
+        )
+        consumer = project.root / "src/main/kotlin/consumer"
+        consumer.mkdir(parents=True, exist_ok=True)
+        (consumer / "Use.kt").write_text(
+            "package consumer\nimport probe.make\n"
+            "fun use(): Int = make().value.id\n"
+        )
+        plan = build_plan(project.root, project.snapshot, project.generated,
+                          (project.existing, project.root / "src/main/kotlin"), "java")
+        finding = next(item for item in plan.findings
+                       if item.kind in {"widen-basic-type", "narrow-basic-type"})
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan).state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_qualified_generic_wrapper_factory_blocks_type_change(self) -> None:
+        """A qualified project-local generic return keeps wrapper state across files."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ))
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Factory.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "fun make(): probe.Box<Employee> = TODO()\n"
+        )
+        consumer = project.root / "src/main/kotlin/consumer"
+        consumer.mkdir(parents=True, exist_ok=True)
+        (consumer / "Use.kt").write_text(
+            "package consumer\nimport probe.make\n"
+            "fun use(): Int = make().value.id\n"
+        )
+        plan = build_plan(project.root, project.snapshot, project.generated,
+                          (project.existing, project.root / "src/main/kotlin"), "java")
+        finding = next(item for item in plan.findings
+                       if item.kind in {"widen-basic-type", "narrow-basic-type"})
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan).state)
+        self.assertEqual(before, target.read_bytes())
+
     def test_alias_wrapper_java_accessor_and_method_reference_block_type_change(self) -> None:
         """Wrapper chains protect both Java getter calls and callable references."""
         project = ProjectFixture(self)
