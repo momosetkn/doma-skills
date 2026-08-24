@@ -2219,7 +2219,7 @@ def _java_entity_factory_keys(
     containing any return type as external evidence because overload
     resolution is outside this source scanner.
     """
-    result: set[tuple[str, str, bool]] = set()
+    result: set[tuple[str, ...]] = set()
     entity_fqcn = (entity.package_name + "." if entity.package_name else "") + entity.class_name
     for fqcn, open_index, close_index in _java_type_body_ranges(
         tokens, _source_package(item)
@@ -2245,7 +2245,14 @@ def _java_entity_factory_keys(
             is_entity = return_type == entity_fqcn or (
                 return_type == entity.class_name and _file_resolves_entity(item, entity)
             )
-            result.add((fqcn, _identifier(tokens[method_index]), is_entity))
+            type_variables = _java_method_type_variables(
+                tokens, open_index, method_index
+            )
+            generic_return = return_type in type_variables
+            result.add((
+                fqcn, _identifier(tokens[method_index]), is_entity,
+                generic_return,
+            ))
     return frozenset(result)
 
 
@@ -2300,24 +2307,103 @@ def _java_entity_collection_factory_keys(
             direct = _direct_entity_type_argument(
                 item, tokens, generic_open + 1, return_end, entity
             )
+            if not direct:
+                # A generic method such as ``<T> List<T> load`` or
+                # ``<T extends Employee> Box<T> load`` has no concrete Entity
+                # token in its declaration.  The call-site type argument is
+                # therefore the only usable substitution proof.  Until the
+                # scanner can resolve overloads and inferred arguments, treat
+                # a direct method type-variable return as Entity evidence and
+                # fail closed for both explicit and inferred calls.
+                return_type_variables = _java_method_type_variables(
+                    tokens, open_index, method_index
+                )
+                argument_tokens = tokens[generic_open + 1:return_end]
+                direct = _contains_top_level_type_variable(
+                    argument_tokens, return_type_variables
+                )
             wrapper = raw_name.rsplit(".", 1)[-1] not in _ENTITY_COLLECTION_TYPES
             result.add((fqcn, _identifier(tokens[method_index]), wrapper, direct))
     return frozenset(result)
+
+
+def _java_method_type_variables(
+    tokens: Sequence[Token], body_open: int, method_index: int
+) -> frozenset[str]:
+    """Return type variables declared by one Java method signature."""
+    return_end = method_index - 1
+    if return_end < body_open:
+        return frozenset()
+    if tokens[return_end].text == ">":
+        return_open = _matching_token_before(tokens, return_end, "<", ">")
+        if return_open is None:
+            return frozenset()
+        return_start = return_open - 1
+    else:
+        return_start = return_end
+    declaration_close = return_start - 1
+    if declaration_close <= body_open or tokens[declaration_close].text != ">":
+        return frozenset()
+    declaration_open = _matching_token_before(tokens, declaration_close, "<", ">")
+    if declaration_open is None or declaration_open <= body_open:
+        return frozenset()
+    result: set[str] = set()
+    cursor = declaration_open + 1
+    depth = 0
+    while cursor < return_start:
+        token = tokens[cursor]
+        if token.text == "<":
+            depth += 1
+        elif token.text == ">":
+            depth = max(0, depth - 1)
+        elif depth == 0 and _identifier(token):
+            previous = tokens[cursor - 1].text if cursor > declaration_open + 1 else ","
+            if previous == ",":
+                result.add(_identifier(token))
+        cursor += 1
+    return frozenset(result)
+
+
+def _contains_top_level_type_variable(
+    tokens: Sequence[Token], type_variables: frozenset[str]
+) -> bool:
+    if not type_variables:
+        return False
+    depth = 0
+    for token in tokens:
+        if token.text == "<":
+            depth += 1
+        elif token.text == ">":
+            depth = max(0, depth - 1)
+        elif depth == 0 and _identifier(token) in type_variables:
+            return True
+    return False
 
 
 def _factory_available(
     item: _SourceFile,
     name: str,
     factory_keys: frozenset[tuple[str, ...]],
+    entity: EntityModel | None = None,
 ) -> bool:
     if item.language == "java":
+        explicit_args, base_name = _java_factory_explicit_call(name)
         java_keys = {
-            (declaring_type, method_name, returns_entity)
+            (
+                declaring_type, method_name, returns_entity,
+                generic_return,
+            )
+            for key in factory_keys
+            if len(key) == 4
+            for declaring_type, method_name, returns_entity, generic_return in (key,)
+        }
+        java_keys.update({
+            (declaring_type, method_name, returns_entity, False)
             for key in factory_keys
             if len(key) == 3
             for declaring_type, method_name, returns_entity in (key,)
-        }
-        parts = name.split(".")
+        })
+        parts = base_name.split(".")
         if len(parts) == 1:
             static_imports = _java_static_imports(item)
             candidates = {
@@ -2365,6 +2451,14 @@ def _factory_available(
         # matching declaration is external evidence and must block a
         # potentially destructive Entity change.  Only an empty candidate set
         # means that no factory evidence exists.
+        if explicit_args is not None and entity is not None:
+            explicit_result = _java_explicit_type_arguments_entity_state(
+                item, explicit_args, entity
+            )
+            if explicit_result is False:
+                candidates = {
+                    key for key in candidates if not key[3]
+                }
         return bool(candidates)
     parts = name.split(".")
     if len(parts) > 1:
@@ -2381,6 +2475,52 @@ def _factory_available(
         for package_name, factory_name in (key,)
         if factory_name == name
     )
+
+
+def _java_factory_explicit_call(name: str) -> tuple[tuple[str, ...] | None, str]:
+    """Split ``Provider.<Employee>load`` into arguments and base name."""
+    marker = name.find(".<")
+    if marker < 0:
+        return None, name
+    open_index = marker + 1
+    close_index = name.find(">", open_index + 1)
+    if close_index < 0:
+        return None, name
+    raw = name[open_index + 1:close_index]
+    arguments = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not arguments:
+        return None, name
+    return arguments, name[:marker] + "." + name[close_index + 1:]
+
+
+def _java_explicit_type_arguments_entity_state(
+    item: _SourceFile,
+    arguments: tuple[str, ...],
+    entity: EntityModel,
+) -> bool | None:
+    """Classify explicit method type arguments as Entity/non-Entity/unknown."""
+    type_names = _entity_type_names(item, entity)
+    state: bool | None = False
+    for argument in arguments:
+        tokens = tuple(
+            token for token in lex_java(argument)
+            if token.kind not in {"WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"}
+        )
+        if _exact_entity_type_reference(tokens, 0, len(tokens), type_names):
+            state = True
+            continue
+        if not tokens or any(
+            token.kind != "IDENT" and token.text not in {".", "?", "extends", "super"}
+            for token in tokens
+        ):
+            return None
+        if any(
+            _identifier(token) and len(_identifier(token)) == 1
+            and _identifier(token).isupper()
+            for token in tokens
+        ):
+            return None
+    return state
 
 
 def _typed_entity_variables(
@@ -3415,6 +3555,7 @@ def _entity_expression_after(
     if _collection_chain_returns_entity(
         tokens, start, collections, collection_factories,
         wrapper_collection_factories,
+        item=item, entity=entity,
     ):
         return True
     parts: list[str] = []
@@ -3426,6 +3567,21 @@ def _entity_expression_after(
         parts.append(part)
         cursor += 1
         if cursor >= len(tokens) or tokens[cursor].text != ".":
+            break
+        if (
+            cursor + 1 < len(tokens)
+            and tokens[cursor + 1].text == "<"
+        ):
+            close = _matching_token(tokens, cursor + 1, "<", ">")
+            if close is None or close + 1 >= len(tokens):
+                break
+            method = _identifier(tokens[close + 1])
+            if not method:
+                break
+            parts.append("<" + "".join(
+                token.text for token in tokens[cursor + 2:close]
+            ) + ">" + method)
+            cursor = close + 2
             break
         cursor += 1
     if not parts or cursor >= len(tokens) or tokens[cursor].text != "(":
@@ -3440,7 +3596,7 @@ def _entity_expression_after(
             len(parts) == 1 and _file_resolves_entity(item, entity)
         ) or ".".join(parts) == fqcn
     factory_name = ".".join(parts)
-    return _factory_available(item, factory_name, factory_keys)
+    return _factory_available(item, factory_name, factory_keys, entity)
 
 
 def _entity_expression_before(
@@ -3466,6 +3622,7 @@ def _entity_expression_before(
     if start is not None and _collection_chain_returns_entity(
         tokens, start, collections, collection_factories,
         wrapper_collection_factories,
+        item=item, entity=entity,
         end=end,
     ):
         return True
@@ -3495,7 +3652,7 @@ def _entity_expression_before(
             and _file_resolves_entity(item, entity)
         )
         or callable_name == fqcn
-        or _factory_available(item, callable_name, factory_keys)
+        or _factory_available(item, callable_name, factory_keys, entity)
     )
 
 
@@ -3515,6 +3672,7 @@ def _callable_name_before(tokens: Sequence[Token], terminal_index: int) -> str:
         return ""
     parts = [terminal_name]
     cursor = terminal_index - 1
+    explicit_type_arguments = ""
     if cursor >= 0 and tokens[cursor].text == ">":
         type_open = _matching_token_before(tokens, cursor, "<", ">")
         if (
@@ -3523,6 +3681,9 @@ def _callable_name_before(tokens: Sequence[Token], terminal_index: int) -> str:
             or tokens[type_open - 1].text != "."
         ):
             return ""
+        explicit_type_arguments = "<" + "".join(
+            token.text for token in tokens[type_open + 1:cursor]
+        ) + ">"
         cursor = type_open - 1
     while cursor >= 1 and tokens[cursor].text == ".":
         previous = _identifier(tokens[cursor - 1])
@@ -3530,7 +3691,11 @@ def _callable_name_before(tokens: Sequence[Token], terminal_index: int) -> str:
             break
         parts.insert(0, previous)
         cursor -= 2
-    return ".".join(part for part in parts if part)
+    result = ".".join(part for part in parts if part)
+    if explicit_type_arguments:
+        owner, method = result.rsplit(".", 1)
+        result = owner + "." + explicit_type_arguments + method
+    return result
 
 
 def _contains_entity_cast(
@@ -3586,6 +3751,8 @@ def _collection_chain_returns_entity(
     collection_factories: frozenset[str],
     generic_wrappers: frozenset[str],
     *,
+    item: _SourceFile | None = None,
+    entity: EntityModel | None = None,
     end: int | None = None,
 ) -> bool:
     limit = len(tokens) if end is None else end + 1
@@ -3594,6 +3761,7 @@ def _collection_chain_returns_entity(
     name = _identifier(tokens[start])
     cursor = start + 1
     qualified_name = name
+    explicit_type_arguments: tuple[str, ...] | None = None
     if name not in collections:
         while (
             cursor + 1 < limit
@@ -3607,6 +3775,9 @@ def _collection_chain_returns_entity(
                     or not _identifier(tokens[type_close + 1])
                 ):
                     return False
+                explicit_type_arguments = tuple(
+                    token.text for token in tokens[cursor + 2:type_close]
+                )
                 qualified_name += "." + _identifier(tokens[type_close + 1])
                 cursor = type_close + 2
                 continue
@@ -3615,6 +3786,15 @@ def _collection_chain_returns_entity(
             qualified_name += "." + _identifier(tokens[cursor + 1])
             cursor += 2
     is_factory = qualified_name in collection_factories
+    if (
+        is_factory and explicit_type_arguments
+        and item is not None and entity is not None
+    ):
+        explicit_state = _java_explicit_type_arguments_entity_state(
+            item, ("".join(explicit_type_arguments),), entity
+        )
+        if explicit_state is False:
+            return False
     if name not in collections and not is_factory:
         return False
     if is_factory and (

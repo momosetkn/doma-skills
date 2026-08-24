@@ -2830,6 +2830,82 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("BLOCKED", type_findings[0].status)
                 self.assertFalse(type_findings[0].edits)
 
+    def test_java_generic_factory_type_arguments_block_entity_type_changes(self) -> None:
+        cases = (
+            (
+                "direct-type-variable",
+                "    public static <T> T load() { return null; }\n",
+                "return Provider.<Employee>load().getId();",
+            ),
+            (
+                "bounded-direct-type-variable",
+                "    public static <T extends Employee> T load() { return null; }\n",
+                "return Provider.<Employee>load().getId();",
+            ),
+            (
+                "collection-type-variable",
+                "    public static <T> List<T> load() { return List.of(); }\n",
+                "return Provider.<Employee>load().get(0).getId();",
+            ),
+            (
+                "wrapper-type-variable",
+                "    public static <T> Box<T> load() { return new Box<>(); }\n",
+                "return Provider.<Employee>load().value().getId();",
+            ),
+        )
+        for label, declaration, expression in cases:
+            with self.subTest(reference=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(
+                    json.dumps(snapshot, separators=(",", ":")) + "\n"
+                )
+                project.generated_file().write_text(java_entity(
+                    fields=java_field(
+                        "id", "employee_id", "Long",
+                        annotations=("@Id",), doc="/** Employee ID */",
+                    ),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                project.existing_file(java_entity(
+                    fields=java_field("id", "employee_id", annotations=("@Id",)),
+                    methods=java_accessors("id"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                provider = project.root / "src/main/java/probe/Provider.java"
+                provider.parent.mkdir(parents=True, exist_ok=True)
+                provider.write_text(
+                    "package probe;\n"
+                    "import example.entity.Employee;\n"
+                    "import java.util.List;\n"
+                    "class Box<T> { T value() { return null; } }\n"
+                    "public class Provider {\n"
+                    + declaration
+                    + "}\n"
+                )
+                consumer = project.root / "src/main/java/consumer/Use.java"
+                consumer.parent.mkdir(parents=True, exist_ok=True)
+                consumer.write_text(
+                    "package consumer;\n"
+                    "import example.entity.Employee;\n"
+                    "import probe.Provider;\n"
+                    "class Use { Integer use() { "
+                    + expression
+                    + " } }\n"
+                )
+
+                plan = project.plan(language="java")
+                type_findings = [
+                    item for item in plan.findings
+                    if item.kind in {"widen-basic-type", "narrow-basic-type"}
+                ]
+                self.assertEqual(["narrow-basic-type"], [item.kind for item in type_findings])
+                self.assertEqual("BLOCKED", type_findings[0].status)
+                self.assertFalse(type_findings[0].edits)
+
     def test_kotlin_project_wrapper_factories_fail_closed_for_alias_imports_and_generic_typealiases(self) -> None:
         cases = (
             (
