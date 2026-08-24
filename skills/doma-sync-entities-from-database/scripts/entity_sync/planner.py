@@ -2125,12 +2125,17 @@ def _entity_factory_keys(
     files: Sequence[_SourceFile], entity: EntityModel
 ) -> frozenset[tuple[str, ...]]:
     result: set[tuple[str, ...]] = set()
+    # Keep project-local Java type relationships alongside factory facts.  A
+    # receiver such as ``this`` may inherit a generic factory from a class or
+    # interface declared in another source file; the source scanner must not
+    # pretend that the receiver's own file contains the declaration.
+    result.update(_java_hierarchy_keys(files))
     for item in files:
-        if not _file_resolves_entity(item, entity):
-            continue
         tokens = _code_tokens(item)
         package_name = _source_package(item)
         if item.language == "kotlin":
+            if not _file_resolves_entity(item, entity):
+                continue
             for index, token in enumerate(tokens):
                 if _identifier(token) != "fun":
                     continue
@@ -2181,7 +2186,24 @@ _JAVA_METHOD_KEYWORDS = {
 def _java_type_body_ranges(
     tokens: Sequence[Token], package_name: str
 ) -> tuple[tuple[str, int, int], ...]:
-    ranges: list[tuple[str, int, int]] = []
+    return tuple(
+        (fqcn, open_index, close_index)
+        for fqcn, _, open_index, close_index in _java_type_declarations(
+            tokens, package_name
+        )
+    )
+
+
+def _java_type_declarations(
+    tokens: Sequence[Token], package_name: str
+) -> tuple[tuple[str, int, int, int], ...]:
+    """Return Java type declarations as ``(fqcn, name, open, close)``.
+
+    This intentionally remains a source-level index.  It does not attempt to
+    model bytecode, inherited generic substitutions, or dependency types.
+    Those cases are represented as unresolved hierarchy edges and ignored.
+    """
+    ranges: list[tuple[str, int, int, int]] = []
     for index, token in enumerate(tokens):
         if token.text not in {"class", "interface", "enum", "record"}:
             continue
@@ -2201,8 +2223,165 @@ def _java_type_body_ranges(
         if close_index is None:
             continue
         fqcn = (package_name + "." if package_name else "") + _identifier(tokens[name_index])
-        ranges.append((fqcn, open_index, close_index))
+        ranges.append((fqcn, name_index, open_index, close_index))
     return tuple(ranges)
+
+
+def _java_hierarchy_keys(
+    files: Sequence[_SourceFile],
+) -> frozenset[tuple[str, ...]]:
+    """Index unambiguous project-local Java ``extends``/``implements`` edges.
+
+    Invalid, ambiguous, duplicate, and cyclic hierarchies are deliberately
+    not used for inherited factory evidence.  Direct declarations continue to
+    work because the invalid marker only suppresses ancestor traversal.
+    """
+    declarations: dict[str, int] = {}
+    parsed: list[tuple[_SourceFile, tuple[Token, ...], str, int, int, int]] = []
+    for item in files:
+        if item.language != "java":
+            continue
+        tokens = _code_tokens(item)
+        package_name = _source_package(item)
+        for fqcn, name_index, open_index, close_index in _java_type_declarations(
+            tokens, package_name
+        ):
+            declarations[fqcn] = declarations.get(fqcn, 0) + 1
+            parsed.append((item, tokens, fqcn, name_index, open_index, close_index))
+
+    keys: set[tuple[str, ...]] = {
+        ("__hierarchy-type__", fqcn)
+        for fqcn in declarations
+    }
+    parents: dict[str, set[str]] = {}
+    invalid: set[str] = set()
+    for item, tokens, child, name_index, open_index, _ in parsed:
+        raw_parents = _java_declared_supertypes(tokens, name_index, open_index)
+        if not raw_parents:
+            continue
+        resolved: set[str] = set()
+        for raw in raw_parents:
+            candidates = _java_project_type_candidates(
+                item, raw, declarations
+            )
+            if len(candidates) != 1:
+                invalid.add(child)
+                continue
+            parent = next(iter(candidates))
+            if declarations.get(parent, 0) != 1:
+                invalid.add(child)
+                continue
+            resolved.add(parent)
+        if child not in invalid:
+            parents.setdefault(child, set()).update(resolved)
+
+    # A cycle makes every edge in the cycle unusable.  Mark the participating
+    # children, while leaving unrelated direct methods resolvable.
+    for child in tuple(parents):
+        if _java_hierarchy_has_cycle(child, parents):
+            invalid.add(child)
+    for child in invalid:
+        parents.pop(child, None)
+        keys.add(("__hierarchy-invalid__", child))
+    for child, values in parents.items():
+        for parent in values:
+            keys.add(("__hierarchy-parent__", child, parent))
+    return frozenset(keys)
+
+
+def _java_declared_supertypes(
+    tokens: Sequence[Token], name_index: int, open_index: int
+) -> tuple[str, ...]:
+    result: list[str] = []
+    cursor = name_index + 1
+    while cursor < open_index:
+        marker = tokens[cursor].text
+        if marker not in {"extends", "implements"}:
+            cursor += 1
+            continue
+        cursor += 1
+        start = cursor
+        depth = 0
+        while cursor <= open_index:
+            text = tokens[cursor].text if cursor < open_index else ","
+            if text == "<":
+                depth += 1
+            elif text == ">":
+                depth = max(0, depth - 1)
+            if depth == 0 and text in {",", "implements", "extends"}:
+                raw = _java_type_name_tokens(tokens[start:cursor])
+                if raw:
+                    result.append(raw)
+                if text in {"implements", "extends"}:
+                    cursor -= 1
+                start = cursor + 1
+            cursor += 1
+    return tuple(result)
+
+
+def _java_type_name_tokens(tokens: Sequence[Token]) -> str:
+    parts: list[str] = []
+    depth = 0
+    for token in tokens:
+        if token.text == "<":
+            depth += 1
+            continue
+        if token.text == ">":
+            depth = max(0, depth - 1)
+            continue
+        if depth:
+            continue
+        name = _identifier(token)
+        if name:
+            parts.append(name)
+        elif token.text == ".":
+            parts.append(".")
+    return "".join(parts).strip(".")
+
+
+def _java_project_type_candidates(
+    item: _SourceFile, raw: str, declarations: dict[str, int]
+) -> frozenset[str]:
+    if "." in raw:
+        return frozenset({raw} if raw in declarations else set())
+    imports = _source_imports(item)
+    exact = {
+        imported for imported in imports
+        if not imported.endswith(".*") and imported.rsplit(".", 1)[-1] == raw
+    }
+    wildcard = {
+        imported[:-2] + "." + raw
+        for imported in imports if imported.endswith(".*")
+    }
+    same_package = (
+        (_source_package(item) + "." if _source_package(item) else "") + raw
+    )
+    candidates = {
+        candidate for candidate in (*exact, *wildcard, same_package)
+        if candidate in declarations
+    }
+    return frozenset(candidates)
+
+
+def _java_hierarchy_has_cycle(
+    start: str, parents: dict[str, set[str]]
+) -> bool:
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        if any(visit(parent) for parent in parents.get(node, ())):
+            return True
+        visiting.remove(node)
+        visited.add(node)
+        return False
+
+    return visit(start)
 
 
 def _java_entity_factory_keys(
@@ -2409,19 +2588,22 @@ def _factory_available(
 ) -> bool:
     if item.language == "java":
         explicit_args, base_name = _java_factory_explicit_call(name)
+        hierarchy_types, hierarchy_parents, hierarchy_invalid = _java_hierarchy_context(
+            factory_keys
+        )
         java_keys = {
             (
                 declaring_type, method_name, returns_entity,
                 generic_return,
             )
             for key in factory_keys
-            if len(key) == 4
+            if len(key) == 4 and not key[0].startswith("__hierarchy-")
             for declaring_type, method_name, returns_entity, generic_return in (key,)
         }
         java_keys.update({
             (declaring_type, method_name, returns_entity, False)
             for key in factory_keys
-            if len(key) == 3
+            if len(key) == 3 and not key[0].startswith("__hierarchy-")
             for declaring_type, method_name, returns_entity in (key,)
         })
         parts = base_name.split(".")
@@ -2443,13 +2625,36 @@ def _factory_available(
             method_name = parts[-1]
             class_name = ".".join(parts[:-1])
             if (
-                class_name == "this"
+                class_name in {"this", "super"}
                 and tokens is not None
                 and receiver_position is not None
             ):
-                class_name = _java_declaring_type_at(
+                declaring_type = _java_declaring_type_at(
                     item, tokens, receiver_position
-                ) or class_name
+                )
+                if declaring_type is not None:
+                    visible_declaring_types = _java_visible_declaring_types(
+                        declaring_type, hierarchy_types, hierarchy_parents,
+                        hierarchy_invalid,
+                    )
+                    if class_name == "super":
+                        visible_declaring_types = {
+                            parent for parent in visible_declaring_types
+                            if parent != declaring_type
+                        }
+                    candidates = {
+                        key for key in java_keys
+                        if key[1] == method_name
+                        and key[0] in visible_declaring_types
+                    }
+                    if explicit_args is not None and entity is not None:
+                        explicit_result = _java_explicit_type_arguments_entity_state(
+                            item, explicit_args, entity
+                        )
+                        if explicit_result is False:
+                            candidates = {key for key in candidates if not key[3]}
+                    return bool(candidates)
+                class_name = class_name
             imports = _source_imports(item)
             visible_types = {
                 class_name,
@@ -2504,6 +2709,56 @@ def _factory_available(
         for package_name, factory_name in (key,)
         if factory_name == name
     )
+
+
+def _java_hierarchy_context(
+    factory_keys: frozenset[tuple[str, ...]],
+) -> tuple[frozenset[str], dict[str, frozenset[str]], frozenset[str]]:
+    types = frozenset(
+        key[1] for key in factory_keys
+        if len(key) == 2 and key[0] == "__hierarchy-type__"
+    )
+    parents: dict[str, set[str]] = {}
+    for key in factory_keys:
+        if len(key) == 3 and key[0] == "__hierarchy-parent__":
+            parents.setdefault(key[1], set()).add(key[2])
+    invalid = frozenset(
+        key[1] for key in factory_keys
+        if len(key) == 2 and key[0] == "__hierarchy-invalid__"
+    )
+    return types, {child: frozenset(values) for child, values in parents.items()}, invalid
+
+
+def _java_visible_declaring_types(
+    declaring_type: str,
+    types: frozenset[str],
+    parents: dict[str, frozenset[str]],
+    invalid: frozenset[str],
+) -> frozenset[str]:
+    """Return a receiver and its proven, acyclic project-local ancestors."""
+    if declaring_type not in types:
+        return frozenset({declaring_type})
+    visible: set[str] = {declaring_type}
+    visiting: set[str] = set()
+
+    def visit(node: str) -> bool:
+        if node in visiting or node in invalid:
+            return False
+        visiting.add(node)
+        for parent in parents.get(node, ()):
+            if parent in visiting:
+                visiting.remove(node)
+                return False
+            if not visit(parent):
+                visiting.remove(node)
+                return False
+            visible.add(parent)
+        visiting.remove(node)
+        return True
+
+    if not visit(declaring_type):
+        return frozenset({declaring_type})
+    return frozenset(visible)
 
 
 def _java_declaring_type_at(

@@ -3019,6 +3019,88 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("BLOCKED", type_findings[0].status)
                 self.assertFalse(type_findings[0].edits)
 
+    def test_java_this_generic_factory_inherited_from_superclass_blocks_entity_type_changes(self) -> None:
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"),
+            imports=("org.seasar.doma.Id",),
+        ))
+        project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", annotations=("@Id",)),
+            methods=java_accessors("id"),
+            imports=("org.seasar.doma.Id",),
+        ))
+        base = project.root / "src/main/java/consumer/Base.java"
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text(
+            "package consumer;\n"
+            "public class Base {\n"
+            "    public <T> T load() { return null; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        use = project.root / "src/main/java/consumer/Use.java"
+        use.write_text(
+            "package consumer;\n"
+            "import example.entity.Employee;\n"
+            "class Use extends Base {\n"
+            "    Integer use() { return this.<Employee>load().getId(); }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        plan = project.plan(language="java")
+        type_findings = [item for item in plan.findings if item.kind in {"widen-basic-type", "narrow-basic-type"}]
+        self.assertEqual(["narrow-basic-type"], [item.kind for item in type_findings])
+        self.assertEqual("BLOCKED", type_findings[0].status)
+        self.assertFalse(type_findings[0].edits)
+
+    def test_java_this_generic_factory_inherited_from_interface_default_blocks_entity_type_changes(self) -> None:
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"),
+            imports=("org.seasar.doma.Id",),
+        ))
+        project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", annotations=("@Id",)),
+            methods=java_accessors("id"),
+            imports=("org.seasar.doma.Id",),
+        ))
+        base = project.root / "src/main/java/consumer/BaseFactory.java"
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text(
+            "package consumer;\n"
+            "public interface BaseFactory {\n"
+            "    default <T> T load() { return null; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        use = project.root / "src/main/java/consumer/Use.java"
+        use.write_text(
+            "package consumer;\n"
+            "import example.entity.Employee;\n"
+            "class Use implements BaseFactory {\n"
+            "    Integer use() { return this.<Employee>load().getId(); }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        plan = project.plan(language="java")
+        type_findings = [item for item in plan.findings if item.kind in {"widen-basic-type", "narrow-basic-type"}]
+        self.assertEqual(["narrow-basic-type"], [item.kind for item in type_findings])
+        self.assertEqual("BLOCKED", type_findings[0].status)
+        self.assertFalse(type_findings[0].edits)
+
     def test_kotlin_project_wrapper_factories_fail_closed_for_alias_imports_and_generic_typealiases(self) -> None:
         cases = (
             (
