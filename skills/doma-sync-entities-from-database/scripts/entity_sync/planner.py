@@ -2007,6 +2007,16 @@ def _source_imports(item: _SourceFile) -> frozenset[str]:
     ))
 
 
+def _java_static_imports(item: _SourceFile) -> frozenset[str]:
+    if item.language != "java":
+        return frozenset()
+    return frozenset(re.findall(
+        r"(?m)^\s*import\s+static\s+"
+        r"([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$*][A-Za-z0-9_$]*)+)",
+        item.source,
+    ))
+
+
 def _code_tokens(item: _SourceFile) -> tuple[Token, ...]:
     tokens = lex_java(item.source) if item.language == "java" else lex_kotlin(item.source)
     ignored = {
@@ -2113,8 +2123,8 @@ def _matching_token(
 
 def _entity_factory_keys(
     files: Sequence[_SourceFile], entity: EntityModel
-) -> frozenset[tuple[str, str]]:
-    result: set[tuple[str, str]] = set()
+) -> frozenset[tuple[str, ...]]:
+    result: set[tuple[str, ...]] = set()
     for item in files:
         if not _file_resolves_entity(item, entity):
             continue
@@ -2152,21 +2162,147 @@ def _entity_factory_keys(
                 if returns_entity:
                     result.add((package_name, name))
         else:
-            for index in range(len(tokens) - 2):
-                if (
-                    _identifier(tokens[index]) == entity.class_name
-                    and _identifier(tokens[index + 1])
-                    and tokens[index + 2].text == "("
-                ):
-                    result.add((package_name, _identifier(tokens[index + 1])))
+            result.update(_java_entity_factory_keys(item, tokens, entity))
+    return frozenset(result)
+
+
+_JAVA_METHOD_KEYWORDS = {
+    "abstract", "assert", "boolean", "break", "byte", "case", "catch",
+    "char", "class", "const", "continue", "default", "do", "double",
+    "else", "enum", "extends", "false", "final", "finally", "float",
+    "for", "goto", "if", "implements", "import", "instanceof", "int",
+    "interface", "long", "native", "new", "null", "package", "private",
+    "protected", "public", "record", "return", "short", "static", "strictfp",
+    "super", "switch", "synchronized", "this", "throw", "throws", "transient",
+    "true", "try", "void", "volatile", "while",
+}
+
+
+def _java_type_body_ranges(
+    tokens: Sequence[Token], package_name: str
+) -> tuple[tuple[str, int, int], ...]:
+    ranges: list[tuple[str, int, int]] = []
+    for index, token in enumerate(tokens):
+        if token.text not in {"class", "interface", "enum", "record"}:
+            continue
+        name_index = next((
+            cursor for cursor in range(index + 1, min(len(tokens), index + 8))
+            if _identifier(tokens[cursor])
+        ), None)
+        if name_index is None:
+            continue
+        open_index = next((
+            cursor for cursor in range(name_index + 1, len(tokens))
+            if tokens[cursor].text == "{"
+        ), None)
+        if open_index is None:
+            continue
+        close_index = _matching_token(tokens, open_index, "{", "}")
+        if close_index is None:
+            continue
+        fqcn = (package_name + "." if package_name else "") + _identifier(tokens[name_index])
+        ranges.append((fqcn, open_index, close_index))
+    return tuple(ranges)
+
+
+def _java_entity_factory_keys(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    entity: EntityModel,
+) -> frozenset[tuple[str, str, bool]]:
+    """Return declaring-class-aware Java method return facts.
+
+    A bare method name is not enough to resolve a Java call: unrelated classes
+    may expose the same method, and overloads may return different types.
+    Retain every project-local declaration for a class/method pair, marking
+    only an exact Entity return as true; resolution rejects a pair containing
+    any non-Entity overload.
+    """
+    result: set[tuple[str, str, bool]] = set()
+    entity_fqcn = (entity.package_name + "." if entity.package_name else "") + entity.class_name
+    for fqcn, open_index, close_index in _java_type_body_ranges(
+        tokens, _source_package(item)
+    ):
+        for method_index in range(open_index + 1, close_index - 1):
+            if not _identifier(tokens[method_index]) or tokens[method_index + 1].text != "(":
+                continue
+            if tokens[method_index - 1].text == ".":
+                continue
+            return_index = method_index - 1
+            return_name = _identifier(tokens[return_index])
+            if not return_name or return_name in _JAVA_METHOD_KEYWORDS:
+                continue
+            return_parts = [return_name]
+            cursor = return_index - 1
+            while cursor >= open_index + 1 and tokens[cursor].text == ".":
+                previous = _identifier(tokens[cursor - 1])
+                if not previous:
+                    break
+                return_parts.insert(0, previous)
+                cursor -= 2
+            return_type = ".".join(return_parts)
+            is_entity = return_type == entity_fqcn or (
+                return_type == entity.class_name and _file_resolves_entity(item, entity)
+            )
+            result.add((fqcn, _identifier(tokens[method_index]), is_entity))
     return frozenset(result)
 
 
 def _factory_available(
     item: _SourceFile,
     name: str,
-    factory_keys: frozenset[tuple[str, str]],
+    factory_keys: frozenset[tuple[str, ...]],
 ) -> bool:
+    if item.language == "java":
+        java_keys = {
+            (declaring_type, method_name, returns_entity)
+            for key in factory_keys
+            if len(key) == 3
+            for declaring_type, method_name, returns_entity in (key,)
+        }
+        parts = name.split(".")
+        if len(parts) == 1:
+            static_imports = _java_static_imports(item)
+            candidates = {
+                key for key in java_keys
+                if key[1] == parts[0]
+                and (
+                    key[0] + "." + key[1] in static_imports
+                    or any(
+                        imported.endswith(".*")
+                        and key[0].startswith(imported[:-2] + ".")
+                        for imported in static_imports
+                    )
+                )
+            }
+        else:
+            method_name = parts[-1]
+            class_name = ".".join(parts[:-1])
+            imports = _source_imports(item)
+            visible_types = {
+                class_name,
+                *(
+                    imported for imported in imports
+                    if not imported.startswith("static.")
+                ),
+            }
+            candidates = {
+                key for key in java_keys
+                if key[1] == method_name
+                and (
+                    key[0] == class_name
+                    or (
+                        "." not in class_name
+                        and key[0].rsplit(".", 1)[-1] == class_name
+                        and (
+                            key[0] in visible_types
+                            or _source_package(item) == key[0].rsplit(".", 1)[0]
+                            or key[0].rsplit(".", 1)[0] + ".*" in imports
+                        )
+                    )
+                )
+            }
+        return bool(candidates) and all(key[2] for key in candidates)
     parts = name.split(".")
     if len(parts) > 1:
         return (".".join(parts[:-1]), parts[-1]) in factory_keys
@@ -2177,7 +2313,9 @@ def _factory_available(
     return any(
         (package_name, name) in factory_keys
         and (package_name + "." + name in imports or package_name + ".*" in imports)
-        for package_name, factory_name in factory_keys
+        for key in factory_keys
+        if len(key) == 2
+        for package_name, factory_name in (key,)
         if factory_name == name
     )
 
@@ -3202,7 +3340,7 @@ def _entity_expression_after(
         return (
             len(parts) == 1 and _file_resolves_entity(item, entity)
         ) or ".".join(parts) == fqcn
-    factory_name = ".".join(parts) if item.language == "kotlin" else parts[-1]
+    factory_name = ".".join(parts)
     return _factory_available(item, factory_name, factory_keys)
 
 
@@ -3250,14 +3388,16 @@ def _entity_expression_before(
                 break
     if open_index is None or open_index == 0:
         return False
-    callable_name = (
-        _callable_name_before(tokens, open_index - 1)
-        if item.language == "kotlin"
-        else _identifier(tokens[open_index - 1])
-    )
+    callable_name = _callable_name_before(tokens, open_index - 1)
+    fqcn = (entity.package_name + "." if entity.package_name else "") + entity.class_name
     return (
-        callable_name == entity.class_name and _file_resolves_entity(item, entity)
-    ) or _factory_available(item, callable_name, factory_keys)
+        (
+            callable_name == entity.class_name
+            and _file_resolves_entity(item, entity)
+        )
+        or callable_name == fqcn
+        or _factory_available(item, callable_name, factory_keys)
+    )
 
 
 def _callable_name_before(tokens: Sequence[Token], terminal_index: int) -> str:
