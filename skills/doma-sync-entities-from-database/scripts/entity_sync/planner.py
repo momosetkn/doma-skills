@@ -1966,8 +1966,9 @@ def _has_external_reference(
     member_names = accessor_names | {prop.name}
     factory_keys = _entity_factory_keys(files, entity)
     typealias_keys = _entity_wrapper_typealias_keys(files, entity)
+    generic_typealias_keys = _entity_generic_wrapper_typealias_keys(files)
     wrapper_factory_keys = _entity_wrapper_factory_keys(
-        files, entity, typealias_keys
+        files, entity, typealias_keys, generic_typealias_keys
     )
     for item in files:
         if item.path == target_path:
@@ -2437,6 +2438,110 @@ def _entity_wrapper_typealias_keys(
     return frozenset(result)
 
 
+def _generic_wrapper_typealias_declarations(
+    item: _SourceFile,
+    known_types: frozenset[str],
+) -> tuple[tuple[str, str, str, bool], ...]:
+    """Return direct, project-local one-parameter wrapper typealiases."""
+    if item.language != "kotlin":
+        return ()
+    tokens = _code_tokens(item)
+    package_name = _source_package(item)
+    declarations: list[tuple[str, str, str, bool]] = []
+    for index, token in enumerate(tokens):
+        if _identifier(token) != "typealias" or index + 5 >= len(tokens):
+            continue
+        alias = _identifier(tokens[index + 1])
+        if not alias or tokens[index + 2].text != "<":
+            continue
+        parameter_end = _matching_token(tokens, index + 2, "<", ">")
+        if parameter_end is None or parameter_end != index + 4:
+            continue
+        parameter = _identifier(tokens[index + 3])
+        if not parameter or tokens[index + 5].text != "=":
+            continue
+        cursor = index + 6
+        parts: list[str] = []
+        while cursor < len(tokens):
+            name = _identifier(tokens[cursor])
+            if not name:
+                break
+            parts.append(name)
+            cursor += 1
+            if cursor >= len(tokens) or tokens[cursor].text != ".":
+                break
+            cursor += 1
+        if not parts or cursor >= len(tokens) or tokens[cursor].text != "<":
+            continue
+        target_raw_name = ".".join(parts)
+        close = _matching_token(tokens, cursor, "<", ">")
+        if close is None or close != cursor + 2:
+            continue
+        if _identifier(tokens[cursor + 1]) != parameter:
+            continue
+        if not _kotlin_project_type_resolves(item, target_raw_name, known_types):
+            continue
+        wrapper = target_raw_name.rsplit(".", 1)[-1] not in _ENTITY_COLLECTION_TYPES
+        declarations.append((package_name, alias, target_raw_name, wrapper))
+    return tuple(declarations)
+
+
+def _entity_generic_wrapper_typealias_keys(
+    files: Sequence[_SourceFile],
+) -> frozenset[tuple[str, str, str, bool]]:
+    """Return project-local generic wrapper aliases with one direct parameter."""
+    known_types = frozenset(
+        declaration
+        for source in files
+        for declaration in _top_level_type_declarations(source)
+    )
+    result: set[tuple[str, str, str, bool]] = set()
+    for item in files:
+        result.update(_generic_wrapper_typealias_declarations(item, known_types))
+    return frozenset(result)
+
+
+def _available_generic_wrapper_typealiases(
+    item: _SourceFile,
+    aliases: frozenset[tuple[str, str, str, bool]],
+) -> dict[str, tuple[str, bool]]:
+    """Resolve unambiguous project-local generic aliases visible to a file."""
+    if item.language != "kotlin":
+        return {}
+    imports = _source_imports(item)
+    imported_as: dict[str, set[str]] = {}
+    for match in re.finditer(
+        r"(?m)^\s*import\s+"
+        r"([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)"
+        r"\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*$",
+        item.source,
+    ):
+        imported_as.setdefault(match.group(2), set()).add(match.group(1))
+    candidates: dict[str, set[tuple[str, bool, str]]] = {}
+    for package_name, alias, target_raw_name, wrapper in aliases:
+        fq_name = (package_name + "." if package_name else "") + alias
+        local_names: set[str] = set()
+        if (
+            _source_package(item) == package_name
+            or fq_name in imports
+            or package_name + ".*" in imports
+        ):
+            local_names.add(alias)
+        local_names.update(
+            local_name for local_name, imported in imported_as.items()
+            if imported == {fq_name}
+        )
+        for local_name in local_names:
+            candidates.setdefault(local_name, set()).add(
+                (target_raw_name, wrapper, fq_name)
+            )
+    return {
+        local_name: (next(iter(values))[0], next(iter(values))[1])
+        for local_name, values in candidates.items()
+        if len(values) == 1
+    }
+
+
 def _available_entity_wrapper_typealiases(
     item: _SourceFile,
     aliases: frozenset[tuple[str, str, bool]],
@@ -2473,6 +2578,7 @@ def _entity_wrapper_factory_keys(
     files: Sequence[_SourceFile],
     entity: EntityModel,
     typealias_keys: frozenset[tuple[str, str, bool]],
+    generic_typealias_keys: frozenset[tuple[str, str, str, bool]] = frozenset(),
 ) -> frozenset[tuple[str, str]]:
     """Return project-local Kotlin factories whose declared return is a wrapper.
 
@@ -2495,6 +2601,9 @@ def _entity_wrapper_factory_keys(
             **_available_entity_wrapper_typealiases(item, typealias_keys),
             **_direct_generic_entity_typealiases(item, _code_tokens(item), entity),
         }
+        generic_aliases = _available_generic_wrapper_typealiases(
+            item, generic_typealias_keys
+        )
         tokens = _code_tokens(item)
         for index, token in enumerate(tokens):
             if _identifier(token) != "fun":
@@ -2512,7 +2621,8 @@ def _entity_wrapper_factory_keys(
                 continue
             if not _kotlin_factory_return_is_entity_wrapper(
                 item, tokens, close_index + 2, entity, aliases,
-                typealias_keys, known_types,
+                typealias_keys, known_types, generic_aliases,
+                generic_typealias_keys,
             ):
                 continue
             name = _identifier(tokens[open_index - 1]) if open_index else ""
@@ -2529,6 +2639,8 @@ def _kotlin_factory_return_is_entity_wrapper(
     aliases: dict[str, bool],
     typealias_keys: frozenset[tuple[str, str, bool]],
     known_types: frozenset[str],
+    generic_aliases: dict[str, tuple[str, bool]] | None = None,
+    generic_typealias_keys: frozenset[tuple[str, str, str, bool]] = frozenset(),
 ) -> bool:
     """Recognize one project-local Kotlin factory return wrapper.
 
@@ -2564,6 +2676,14 @@ def _kotlin_factory_return_is_entity_wrapper(
     close = _matching_token(tokens, cursor, "<", ">")
     if close is None:
         return False
+    generic_alias = _kotlin_generic_wrapper_alias_resolves(
+        raw_name, generic_aliases or {}, generic_typealias_keys
+    )
+    if generic_alias is not None:
+        return (
+            generic_alias[1]
+            and _direct_entity_type_argument(item, tokens, cursor + 1, close, entity)
+        )
     if not _kotlin_project_type_resolves(item, raw_name, known_types):
         return False
     return (
@@ -2585,6 +2705,22 @@ def _kotlin_wrapper_alias_resolves(
         and (package_name + "." if package_name else "") + alias == raw_name
         for package_name, alias, wrapper in typealias_keys
     )
+
+
+def _kotlin_generic_wrapper_alias_resolves(
+    raw_name: str,
+    aliases: dict[str, tuple[str, bool]],
+    typealias_keys: frozenset[tuple[str, str, str, bool]],
+) -> tuple[str, bool] | None:
+    terminal = raw_name.rsplit(".", 1)[-1]
+    if len(raw_name.split(".")) == 1:
+        return aliases.get(terminal)
+    matches = {
+        (target_raw_name, wrapper)
+        for package_name, alias, target_raw_name, wrapper in typealias_keys
+        if (package_name + "." if package_name else "") + alias == raw_name
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def _kotlin_project_type_resolves(
@@ -2619,13 +2755,28 @@ def _available_wrapper_factories(
 ) -> frozenset[str]:
     """Resolve only project-local wrapper factories visible in this Kotlin file."""
     imports = _source_imports(item)
-    return frozenset(
-        name for package_name, name in factories
+    imported_aliases: dict[str, set[str]] = {}
+    for match in re.finditer(
+        r"(?m)^\s*import\s+"
+        r"([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)"
+        r"\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*$",
+        item.source,
+    ):
+        imported_aliases.setdefault(match.group(2), set()).add(match.group(1))
+    visible: dict[str, set[tuple[str, str]]] = {}
+    for package_name, name in factories:
+        fq_name = package_name + "." + name
         if (
             package_name == _source_package(item)
-            or package_name + "." + name in imports
+            or fq_name in imports
             or package_name + ".*" in imports
-        )
+        ):
+            visible.setdefault(name, set()).add((package_name, name))
+        for local_name, imported in imported_aliases.items():
+            if imported == {fq_name}:
+                visible.setdefault(local_name, set()).add((package_name, name))
+    return frozenset(
+        name for name, candidates in visible.items() if len(candidates) == 1
     )
 
 
