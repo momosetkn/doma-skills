@@ -3087,6 +3087,304 @@ class EntityMergeTests(unittest.TestCase):
         self.assertEqual("BLOCKED", apply_plan(project.root, plan, approvals=()).state)
         self.assertEqual(before, target.read_bytes())
 
+    def test_star_imported_project_local_direct_wrapper_alias_blocks_type_change(self) -> None:
+        """A project-local star import can expose a direct Entity wrapper alias."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(
+            json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ), encoding="utf-8")
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Alias.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias StaffBox = Box<Employee>\n", encoding="utf-8"
+        )
+        consumer = project.root / "src/main/kotlin/consumer"
+        consumer.mkdir(parents=True, exist_ok=True)
+        (consumer / "Use.kt").write_text(
+            "package consumer\nimport probe.*\n"
+            "fun use(box: StaffBox): Int = box.value.id\n", encoding="utf-8"
+        )
+
+        plan = build_plan(
+            project.root, project.snapshot, project.generated,
+            (project.existing, project.root / "src/main/kotlin"), "java",
+        )
+        finding = next(
+            item for item in plan.findings
+            if item.kind in {"widen-basic-type", "narrow-basic-type"}
+        )
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan, approvals=()).state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_direct_wrapper_alias_factory_return_blocks_type_change(self) -> None:
+        """An alias-expanded direct wrapper factory remains an Entity receiver."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(
+            json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ), encoding="utf-8")
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Use.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias StaffBox = Box<Employee>\n"
+            "fun load(): StaffBox = TODO()\n"
+            "fun use(): Int = load().value.id\n", encoding="utf-8"
+        )
+
+        plan = build_plan(
+            project.root, project.snapshot, project.generated,
+            (project.existing, project.root / "src/main/kotlin"), "java",
+        )
+        finding = next(
+            item for item in plan.findings
+            if item.kind in {"widen-basic-type", "narrow-basic-type"}
+        )
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan, approvals=()).state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_generic_direct_wrapper_alias_blocks_type_change(self) -> None:
+        """A generic typealias still directly exposes the Entity argument."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(
+            json.dumps(snapshot, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ), encoding="utf-8")
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Alias.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias StaffBox<T> = Box<Employee>\n", encoding="utf-8"
+        )
+        consumer = project.root / "src/main/kotlin/consumer"
+        consumer.mkdir(parents=True, exist_ok=True)
+        (consumer / "Use.kt").write_text(
+            "package consumer\nimport probe.StaffBox\n"
+            "fun use(box: StaffBox<String>): Int = box.value.id\n", encoding="utf-8"
+        )
+
+        plan = build_plan(
+            project.root, project.snapshot, project.generated,
+            (project.existing, project.root / "src/main/kotlin"), "java",
+        )
+        finding = next(
+            item for item in plan.findings
+            if item.kind in {"widen-basic-type", "narrow-basic-type"}
+        )
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan, approvals=()).state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_generic_alias_substitution_to_entity_blocks_type_change(self) -> None:
+        """A typealias parameter instantiated with the Entity is a wrapper use."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ))
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Alias.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias Alias<T> = Box<T>\n"
+            "fun use(box: Alias<Employee>): Int = box.value.id\n"
+        )
+        plan = build_plan(project.root, project.snapshot, project.generated,
+                          (project.existing, project.root / "src/main/kotlin"), "java")
+        finding = next(item for item in plan.findings
+                       if item.kind in {"widen-basic-type", "narrow-basic-type"})
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan).state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_imported_alias_wrapper_factory_blocks_type_change(self) -> None:
+        """A visible project-local factory returning an alias keeps wrapper state."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ))
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Factory.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias StaffBox = Box<Employee>\n"
+            "fun make(): StaffBox = TODO()\n"
+        )
+        consumer = project.root / "src/main/kotlin/consumer"
+        consumer.mkdir(parents=True, exist_ok=True)
+        (consumer / "Use.kt").write_text(
+            "package consumer\nimport probe.*\n"
+            "fun use(): Int = make().value.id\n"
+        )
+        plan = build_plan(project.root, project.snapshot, project.generated,
+                          (project.existing, project.root / "src/main/kotlin"), "java")
+        finding = next(item for item in plan.findings
+                       if item.kind in {"widen-basic-type", "narrow-basic-type"})
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan).state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_alias_wrapper_java_accessor_and_method_reference_block_type_change(self) -> None:
+        """Wrapper chains protect both Java getter calls and callable references."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ))
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Use.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias StaffBox = Box<Employee>\n"
+            "fun use(box: StaffBox): Int = box.value.getId()\n"
+            "fun ref(box: StaffBox) = box.value::getId\n"
+        )
+        plan = build_plan(project.root, project.snapshot, project.generated,
+                          (project.existing, project.root / "src/main/kotlin"), "java")
+        finding = next(item for item in plan.findings
+                       if item.kind in {"widen-basic-type", "narrow-basic-type"})
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan).state)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_alias_wrapper_method_reference_alone_blocks_type_change(self) -> None:
+        """A callable reference cannot be masked by a separate direct getter call."""
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text(encoding="utf-8"))
+        snapshot["tables"][0]["columns"][0].update({
+            "jdbc_type": -5, "type_name": "int8", "size": 64,
+            "scale": 0, "auto_increment": False,
+        })
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Long"), imports=("org.seasar.doma.Id",),
+        ))
+        target = project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", "Integer", annotations=("@Id",), doc="/** Employee ID */"),
+            methods=java_accessors("id", "Integer"), imports=("org.seasar.doma.Id",),
+        ))
+        probe = project.root / "src/main/kotlin/probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        (probe / "Use.kt").write_text(
+            "package probe\nimport example.entity.Employee\n"
+            "class Box<T>(val value: T)\n"
+            "typealias StaffBox = Box<Employee>\n"
+            "fun ref(box: StaffBox) = box.value::getId\n"
+        )
+        plan = build_plan(project.root, project.snapshot, project.generated,
+                          (project.existing, project.root / "src/main/kotlin"), "java")
+        finding = next(item for item in plan.findings
+                       if item.kind in {"widen-basic-type", "narrow-basic-type"})
+        self.assertEqual("BLOCKED", finding.status)
+        self.assertFalse(finding.edits)
+        before = target.read_bytes()
+        project.commit()
+        self.assertEqual("BLOCKED", apply_plan(project.root, plan).state)
+        self.assertEqual(before, target.read_bytes())
+
     def test_java_record_lombok_and_version_inference_are_blocked(self) -> None:
         project = ProjectFixture(self)
         project.generated_file()
