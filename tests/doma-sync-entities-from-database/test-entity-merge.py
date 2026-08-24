@@ -3261,6 +3261,83 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("BLOCKED", type_findings[0].status)
                 self.assertFalse(type_findings[0].edits)
 
+    def test_java_single_type_import_shadows_on_demand_import_for_nested_receiver(self) -> None:
+        project = ProjectFixture(self)
+        project.retain_snapshot_columns("employee_id")
+        snapshot = json.loads(project.snapshot.read_text())
+        snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+        project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        project.generated_file().write_text(java_entity(
+            fields=java_field(
+                "id", "employee_id", "Long",
+                annotations=("@Id",), doc="/** Employee ID */",
+            ),
+            methods=java_accessors("id", "Long"),
+            imports=("org.seasar.doma.Id",),
+        ))
+        project.existing_file(java_entity(
+            fields=java_field("id", "employee_id", annotations=("@Id",)),
+            methods=java_accessors("id"),
+            imports=("org.seasar.doma.Id",),
+        ))
+
+        for package_name in ("consumer", "other"):
+            base = project.root / f"src/main/java/{package_name}/Base.java"
+            base.parent.mkdir(parents=True, exist_ok=True)
+            base.write_text(
+                f"package {package_name};\n"
+                "public class Base {\n"
+                "    public static <T> T load() { return null; }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            outer = project.root / f"src/main/java/{package_name}/Outer.java"
+            outer.write_text(
+                f"package {package_name};\n"
+                "public class Outer {\n"
+                "    public static class Use extends Base {}\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+        consumer = project.root / "src/main/java/client/Use.java"
+        consumer.parent.mkdir(parents=True, exist_ok=True)
+        consumer.write_text(
+            "package client;\n"
+            "import consumer.Outer;\n"
+            "import other.*;\n"
+            "import example.entity.Employee;\n"
+            "class Use { Integer use() { return Outer.Use.<Employee>load().getId(); } }\n",
+            encoding="utf-8",
+        )
+
+        plan = project.plan(language="java")
+        type_findings = [
+            item for item in plan.findings
+            if item.kind in {"widen-basic-type", "narrow-basic-type"}
+        ]
+        self.assertEqual(["narrow-basic-type"], [item.kind for item in type_findings])
+        self.assertEqual("BLOCKED", type_findings[0].status)
+        self.assertFalse(type_findings[0].edits)
+
+        ambiguous = project.root / "src/main/java/client/Ambiguous.java"
+        ambiguous.write_text(
+            "package client;\n"
+            "import consumer.*;\n"
+            "import other.*;\n"
+            "import example.entity.Employee;\n"
+            "class Ambiguous { Integer use() { return Outer.Use.<Employee>load().getId(); } }\n",
+            encoding="utf-8",
+        )
+        plan = project.plan(language="java")
+        type_findings = [
+            item for item in plan.findings
+            if item.kind in {"widen-basic-type", "narrow-basic-type"}
+        ]
+        self.assertEqual(["narrow-basic-type"], [item.kind for item in type_findings])
+        self.assertEqual("BLOCKED", type_findings[0].status)
+        self.assertFalse(type_findings[0].edits)
+
     def test_java_this_generic_factory_inherited_from_interface_default_blocks_entity_type_changes(self) -> None:
         project = ProjectFixture(self)
         project.retain_snapshot_columns("employee_id")

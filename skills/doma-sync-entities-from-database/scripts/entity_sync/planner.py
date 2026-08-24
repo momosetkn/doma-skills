@@ -2715,6 +2715,23 @@ def _factory_available(
                     if key[1] == method_name
                     and key[0] in visible_declaring_types
                 }
+            elif len(receiver_types) > 1:
+                # Preserve every possible receiver when source-only
+                # resolution remains ambiguous.  A matching method on any
+                # candidate is external evidence; dropping all candidates
+                # here would incorrectly make the call look SAFE.
+                visible_declaring_types = frozenset().union(*(
+                    _java_visible_declaring_types(
+                        receiver_type, hierarchy_types, hierarchy_parents,
+                        hierarchy_invalid,
+                    )
+                    for receiver_type in receiver_types
+                ))
+                candidates = {
+                    key for key in java_keys
+                    if key[1] == method_name
+                    and key[0] in visible_declaring_types
+                }
             else:
                 candidates = {
                     key for key in java_keys
@@ -2826,34 +2843,66 @@ def _java_qualified_receiver_types(
     source path, so normalize both before applying package/import visibility.
     """
     imports = _source_imports(item)
+    type_imports = frozenset(
+        imported for imported in imports if not imported.startswith("static.")
+    )
+    single_type_imports = frozenset(
+        imported for imported in type_imports if not imported.endswith(".*")
+    )
+    on_demand_imports = frozenset(
+        imported for imported in type_imports if imported.endswith(".*")
+    )
     normalized = class_name.replace("$", ".")
     if "." in normalized:
-        qualified = {normalized}
-        package_name = _source_package(item)
-        if package_name:
-            qualified.add(package_name + "." + normalized)
-        qualified.update(
-            imported.replace("$", ".")
-            for imported in imports
-            if not imported.endswith(".*")
-            and imported.replace("$", ".").endswith("." + normalized)
-        )
         nested_parts = normalized.split(".")
-        if len(nested_parts) > 1:
-            outer_name = nested_parts[0]
-            nested_suffix = ".".join(nested_parts[1:])
-            qualified.update(
-                imported_name + "." + nested_suffix
-                for imported in imports
-                if not imported.endswith(".*")
-                for imported_name in (imported.replace("$", "."),)
-                if imported_name.rsplit(".", 1)[-1] == outer_name
-            )
-        qualified.update(
-            imported[:-2].replace("$", ".") + "." + normalized
-            for imported in imports if imported.endswith(".*")
+        outer_name = nested_parts[0]
+        nested_suffix = ".".join(nested_parts[1:])
+        explicit_outer_imports = frozenset(
+            imported.replace("$", ".")
+            for imported in single_type_imports
+            if imported.replace("$", ".").rsplit(".", 1)[-1] == outer_name
         )
+        if explicit_outer_imports:
+            # JLS single-type imports take precedence over all on-demand
+            # imports for the same simple outer type.  Do not let a project
+            # local wildcard candidate make an explicitly imported external
+            # type appear ambiguous or vice versa.
+            qualified = {
+                imported + "." + nested_suffix
+                for imported in explicit_outer_imports
+            }
+        else:
+            qualified = {normalized}
+            package_name = _source_package(item)
+            if package_name:
+                qualified.add(package_name + "." + normalized)
+            qualified.update(
+                imported.replace("$", ".")
+                for imported in single_type_imports
+                if imported.replace("$", ".").endswith("." + normalized)
+            )
+            qualified.update(
+                imported_name.replace("$", ".") + "." + nested_suffix
+                for imported_name in single_type_imports
+                if imported_name.replace("$", ".").rsplit(".", 1)[-1] == outer_name
+            )
+            qualified.update(
+                imported[:-2].replace("$", ".") + "." + normalized
+                for imported in on_demand_imports
+            )
         return frozenset(candidate for candidate in qualified if candidate in hierarchy_types)
+    explicit_imports = frozenset(
+        imported.replace("$", ".")
+        for imported in single_type_imports
+        if imported.replace("$", ".").rsplit(".", 1)[-1] == normalized
+    )
+    if explicit_imports:
+        # A single-type import also shadows an on-demand import for a simple
+        # receiver such as ``Provider.load()``.
+        return frozenset(
+            candidate for candidate in explicit_imports
+            if candidate in hierarchy_types
+        )
     return frozenset(
         candidate for candidate in hierarchy_types
         if candidate.rsplit(".", 1)[-1] == normalized
@@ -2868,8 +2917,8 @@ def _java_qualified_receiver_types(
         )
         and (
             candidate.rsplit(".", 1)[0] == _source_package(item)
-            or candidate in imports
-            or candidate.rsplit(".", 1)[0] + ".*" in imports
+            or candidate in type_imports
+            or candidate.rsplit(".", 1)[0] + ".*" in on_demand_imports
         )
     )
 
