@@ -2227,7 +2227,7 @@ def _java_entity_factory_keys(
         for method_index in range(open_index + 1, close_index - 1):
             if not _identifier(tokens[method_index]) or tokens[method_index + 1].text != "(":
                 continue
-            if tokens[method_index - 1].text == ".":
+            if _java_method_name_is_call(tokens, method_index, open_index):
                 continue
             return_index = method_index - 1
             return_name = _identifier(tokens[return_index])
@@ -2277,7 +2277,7 @@ def _java_entity_collection_factory_keys(
         for method_index in range(open_index + 1, close_index - 1):
             if not _identifier(tokens[method_index]) or tokens[method_index + 1].text != "(":
                 continue
-            if tokens[method_index - 1].text == ".":
+            if _java_method_name_is_call(tokens, method_index, open_index):
                 continue
             if _identifier(tokens[method_index]) == simple_name:
                 continue
@@ -2325,6 +2325,24 @@ def _java_entity_collection_factory_keys(
             wrapper = raw_name.rsplit(".", 1)[-1] not in _ENTITY_COLLECTION_TYPES
             result.add((fqcn, _identifier(tokens[method_index]), wrapper, direct))
     return frozenset(result)
+
+
+def _java_method_name_is_call(
+    tokens: Sequence[Token], method_index: int, body_open: int
+) -> bool:
+    """Exclude dotted calls, including calls with explicit type arguments."""
+    previous = tokens[method_index - 1].text
+    if previous == ".":
+        return True
+    if previous != ">":
+        return False
+    type_open = _matching_token_before(tokens, method_index - 1, "<", ">")
+    return (
+        type_open is not None
+        and type_open > body_open
+        and type_open > 0
+        and tokens[type_open - 1].text == "."
+    )
 
 
 def _java_method_type_variables(
@@ -2385,6 +2403,9 @@ def _factory_available(
     name: str,
     factory_keys: frozenset[tuple[str, ...]],
     entity: EntityModel | None = None,
+    *,
+    tokens: Sequence[Token] | None = None,
+    receiver_position: int | None = None,
 ) -> bool:
     if item.language == "java":
         explicit_args, base_name = _java_factory_explicit_call(name)
@@ -2421,6 +2442,14 @@ def _factory_available(
         else:
             method_name = parts[-1]
             class_name = ".".join(parts[:-1])
+            if (
+                class_name == "this"
+                and tokens is not None
+                and receiver_position is not None
+            ):
+                class_name = _java_declaring_type_at(
+                    item, tokens, receiver_position
+                ) or class_name
             imports = _source_imports(item)
             visible_types = {
                 class_name,
@@ -2475,6 +2504,24 @@ def _factory_available(
         for package_name, factory_name in (key,)
         if factory_name == name
     )
+
+
+def _java_declaring_type_at(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    position: int,
+) -> str | None:
+    """Return the innermost Java class containing a token position."""
+    if item.language != "java":
+        return None
+    containing = [
+        (open_index, fqcn)
+        for fqcn, open_index, close_index in _java_type_body_ranges(
+            tokens, _source_package(item)
+        )
+        if open_index < position < close_index
+    ]
+    return max(containing, default=None)[1] if containing else None
 
 
 def _java_factory_explicit_call(name: str) -> tuple[tuple[str, ...] | None, str]:
@@ -3630,7 +3677,10 @@ def _entity_expression_after(
             len(parts) == 1 and _file_resolves_entity(item, entity)
         ) or ".".join(parts) == fqcn
     factory_name = ".".join(parts)
-    return _factory_available(item, factory_name, factory_keys, entity)
+    return _factory_available(
+        item, factory_name, factory_keys, entity,
+        tokens=tokens, receiver_position=start,
+    )
 
 
 def _entity_expression_before(
@@ -3686,7 +3736,10 @@ def _entity_expression_before(
             and _file_resolves_entity(item, entity)
         )
         or callable_name == fqcn
-        or _factory_available(item, callable_name, factory_keys, entity)
+        or _factory_available(
+            item, callable_name, factory_keys, entity,
+            tokens=tokens, receiver_position=end,
+        )
     )
 
 
@@ -3840,6 +3893,10 @@ def _collection_chain_returns_entity(
                 return False
             qualified_name += "." + _identifier(tokens[cursor + 1])
             cursor += 2
+    if item is not None and item.language == "java" and qualified_name.startswith("this."):
+        declaring_type = _java_declaring_type_at(item, tokens, start)
+        if declaring_type is not None:
+            qualified_name = declaring_type + qualified_name[len("this"):]
     is_factory = qualified_name in collection_factories
     if (
         is_factory and explicit_type_arguments
