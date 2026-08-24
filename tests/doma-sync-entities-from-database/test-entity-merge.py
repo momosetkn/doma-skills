@@ -3202,6 +3202,65 @@ class EntityMergeTests(unittest.TestCase):
                 self.assertEqual("BLOCKED", type_findings[0].status)
                 self.assertFalse(type_findings[0].edits)
 
+    def test_java_nested_factory_resolves_imported_outer_and_fully_qualified_nested_receivers(self) -> None:
+        cases = (
+            ("imported-outer-source", "import consumer.Outer;\n", "Outer.Use"),
+            ("imported-outer-binary", "import consumer.Outer;\n", "Outer$Use"),
+            ("fully-qualified-source", "", "consumer.Outer.Use"),
+            ("fully-qualified-binary", "", "consumer.Outer$Use"),
+        )
+        for label, imports, receiver in cases:
+            with self.subTest(reference=label):
+                project = ProjectFixture(self)
+                project.retain_snapshot_columns("employee_id")
+                snapshot = json.loads(project.snapshot.read_text())
+                snapshot["tables"][0]["columns"][0]["auto_increment"] = False
+                project.snapshot.write_text(json.dumps(snapshot, separators=(",", ":")) + "\n")
+                project.generated_file().write_text(java_entity(
+                    fields=java_field("id", "employee_id", "Long", annotations=("@Id",), doc="/** Employee ID */"),
+                    methods=java_accessors("id", "Long"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                project.existing_file(java_entity(
+                    fields=java_field("id", "employee_id", annotations=("@Id",)),
+                    methods=java_accessors("id"),
+                    imports=("org.seasar.doma.Id",),
+                ))
+                base = project.root / "src/main/java/consumer/Base.java"
+                base.parent.mkdir(parents=True, exist_ok=True)
+                base.write_text(
+                    "package consumer;\n"
+                    "public class Base {\n"
+                    "    public static <T> T load() { return null; }\n"
+                    "}\n",
+                    encoding="utf-8",
+                )
+                outer = project.root / "src/main/java/consumer/Outer.java"
+                outer.write_text(
+                    "package consumer;\n"
+                    "public class Outer {\n"
+                    "    public static class Use extends Base {}\n"
+                    "}\n",
+                    encoding="utf-8",
+                )
+                consumer = project.root / "src/main/java/probe/Use.java"
+                consumer.parent.mkdir(parents=True, exist_ok=True)
+                consumer.write_text(
+                    "package probe;\n"
+                    + imports
+                    + "import example.entity.Employee;\n"
+                    + "class Use { Integer use() { return "
+                    + receiver
+                    + ".<Employee>load().getId(); } }\n",
+                    encoding="utf-8",
+                )
+
+                plan = project.plan(language="java")
+                type_findings = [item for item in plan.findings if item.kind in {"widen-basic-type", "narrow-basic-type"}]
+                self.assertEqual(["narrow-basic-type"], [item.kind for item in type_findings])
+                self.assertEqual("BLOCKED", type_findings[0].status)
+                self.assertFalse(type_findings[0].edits)
+
     def test_java_this_generic_factory_inherited_from_interface_default_blocks_entity_type_changes(self) -> None:
         project = ProjectFixture(self)
         project.retain_snapshot_columns("employee_id")

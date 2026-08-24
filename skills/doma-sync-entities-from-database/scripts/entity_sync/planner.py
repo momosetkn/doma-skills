@@ -2838,6 +2838,17 @@ def _java_qualified_receiver_types(
             if not imported.endswith(".*")
             and imported.replace("$", ".").endswith("." + normalized)
         )
+        nested_parts = normalized.split(".")
+        if len(nested_parts) > 1:
+            outer_name = nested_parts[0]
+            nested_suffix = ".".join(nested_parts[1:])
+            qualified.update(
+                imported_name + "." + nested_suffix
+                for imported in imports
+                if not imported.endswith(".*")
+                for imported_name in (imported.replace("$", "."),)
+                if imported_name.rsplit(".", 1)[-1] == outer_name
+            )
         qualified.update(
             imported[:-2].replace("$", ".") + "." + normalized
             for imported in imports if imported.endswith(".*")
