@@ -2249,6 +2249,62 @@ def _java_entity_factory_keys(
     return frozenset(result)
 
 
+def _java_entity_collection_factory_keys(
+    item: _SourceFile,
+    tokens: Sequence[Token],
+    entity: EntityModel,
+) -> frozenset[tuple[str, str, bool, bool]]:
+    """Return class-qualified Java generic factory return facts.
+
+    The final boolean records whether the generic argument is this Entity;
+    the preceding boolean records whether the generic type is a wrapper rather
+    than a collection.  Keep non-Entity generic overloads as negative facts so
+    a matching method cannot be selected when Java overload resolution is not
+    available to this source scanner.
+    """
+    result: set[tuple[str, str, bool, bool]] = set()
+    for fqcn, open_index, close_index in _java_type_body_ranges(
+        tokens, _source_package(item)
+    ):
+        simple_name = fqcn.rsplit(".", 1)[-1]
+        for method_index in range(open_index + 1, close_index - 1):
+            if not _identifier(tokens[method_index]) or tokens[method_index + 1].text != "(":
+                continue
+            if tokens[method_index - 1].text == ".":
+                continue
+            if _identifier(tokens[method_index]) == simple_name:
+                continue
+            return_end = method_index - 1
+            generic_open = (
+                _matching_token_before(tokens, return_end, "<", ">")
+                if tokens[return_end].text == ">" else None
+            )
+            if generic_open is None:
+                result.add((fqcn, _identifier(tokens[method_index]), False, False))
+                continue
+            raw_parts: list[str] = []
+            cursor = generic_open - 1
+            while cursor >= open_index + 1:
+                name = _identifier(tokens[cursor])
+                if not name:
+                    break
+                raw_parts.insert(0, name)
+                cursor -= 1
+                if cursor < open_index + 1 or tokens[cursor].text != ".":
+                    break
+                cursor -= 1
+            if not raw_parts:
+                result.add((fqcn, _identifier(tokens[method_index]), False, False))
+                continue
+            raw_name = ".".join(raw_parts)
+            direct = _direct_entity_type_argument(
+                item, tokens, generic_open + 1, return_end, entity
+            )
+            wrapper = raw_name.rsplit(".", 1)[-1] not in _ENTITY_COLLECTION_TYPES
+            result.add((fqcn, _identifier(tokens[method_index]), wrapper, direct))
+    return frozenset(result)
+
+
 def _factory_available(
     item: _SourceFile,
     name: str,
@@ -2391,7 +2447,7 @@ def _entity_collection_symbols(
     entity: EntityModel,
     typealias_keys: frozenset[tuple[str, str, bool]] = frozenset(),
     wrapper_factory_keys: frozenset[tuple[str, str]] = frozenset(),
-    collection_factory_keys: frozenset[tuple[str, str, bool]] = frozenset(),
+    collection_factory_keys: frozenset[tuple[str, ...]] = frozenset(),
 ) -> _CollectionSymbols:
     imported_typealiases = _available_entity_wrapper_typealiases(item, typealias_keys)
     visible_wrapper_factories = _available_wrapper_factories(
@@ -2801,23 +2857,26 @@ def _entity_collection_factory_keys(
     files: Sequence[_SourceFile],
     entity: EntityModel,
     generic_typealias_keys: frozenset[tuple[str, str, str, bool]] = frozenset(),
-) -> frozenset[tuple[str, str, bool]]:
-    """Return project-local Kotlin factories returning Entity collections.
+) -> frozenset[tuple[str, ...]]:
+    """Return project-local factories returning generic Entity receivers.
 
-    The boolean records whether the collection element is a direct generic
-    wrapper around the Entity.  A plain ``List<Employee>`` is therefore a
-    collection receiver, while ``List<Box<Employee>>`` remains unknown.
+    Kotlin entries use ``(package, name, wrapper)``. Java entries retain the
+    declaring class and a separate proof bit so unresolved or ambiguous
+    overloads cannot become visible collection/wrapper symbols.
     """
-    result: set[tuple[str, str, bool]] = set()
+    result: set[tuple[str, ...]] = set()
     known_types = frozenset(
         declaration
         for source in files
         for declaration in _top_level_type_declarations(source)
     )
     for item in files:
+        tokens = _code_tokens(item)
+        if item.language == "java":
+            result.update(_java_entity_collection_factory_keys(item, tokens, entity))
+            continue
         if item.language != "kotlin":
             continue
-        tokens = _code_tokens(item)
         generic_aliases = _available_generic_wrapper_typealiases(
             item, generic_typealias_keys
         )
@@ -3045,11 +3104,41 @@ def _available_wrapper_factories(
 
 def _available_entity_collection_factories(
     item: _SourceFile,
-    factories: frozenset[tuple[str, str, bool]],
+    factories: frozenset[tuple[str, ...]],
 ) -> dict[str, bool]:
     """Resolve unambiguous collection factories, including FQ calls."""
     if item.language != "kotlin":
-        return {}
+        if item.language != "java":
+            return {}
+        imports = _source_imports(item)
+        static_imports = _java_static_imports(item)
+        visible: dict[str, set[tuple[str, bool, bool]]] = {}
+        for key in factories:
+            if len(key) != 4:
+                continue
+            declaring_type, name, wrapper, direct = key
+            fq_name = declaring_type + "." + name
+            candidate = (fq_name, wrapper, direct)
+            # A fully-qualified project-local call does not require an import.
+            visible.setdefault(fq_name, set()).add(candidate)
+            class_name = declaring_type.rsplit(".", 1)[-1]
+            declaring_package = declaring_type.rsplit(".", 1)[0] if "." in declaring_type else ""
+            if (
+                declaring_type in imports
+                or declaring_package == _source_package(item)
+                or declaring_package + ".*" in imports
+            ):
+                visible.setdefault(class_name + "." + name, set()).add(candidate)
+            if (
+                declaring_type + "." + name in static_imports
+                or declaring_type + ".*" in static_imports
+            ):
+                visible.setdefault(name, set()).add(candidate)
+        return {
+            local_name: next(iter(values))[1]
+            for local_name, values in visible.items()
+            if len(values) == 1 and next(iter(values))[2]
+        }
     imports = _source_imports(item)
     imported_aliases: dict[str, set[str]] = {}
     for match in re.finditer(
@@ -3060,7 +3149,10 @@ def _available_entity_collection_factories(
     ):
         imported_aliases.setdefault(match.group(2), set()).add(match.group(1))
     visible: dict[str, set[tuple[str, bool]]] = {}
-    for package_name, name, wrapper in factories:
+    for key in factories:
+        if len(key) != 3:
+            continue
+        package_name, name, wrapper = key
         fq_name = (package_name + "." if package_name else "") + name
         # A fully-qualified project-local call does not require an import.
         visible.setdefault(fq_name, set()).add((fq_name, wrapper))
@@ -3506,8 +3598,20 @@ def _collection_chain_returns_entity(
         while (
             cursor + 1 < limit
             and tokens[cursor].text == "."
-            and _identifier(tokens[cursor + 1])
         ):
+            if tokens[cursor + 1].text == "<":
+                type_close = _matching_token(tokens, cursor + 1, "<", ">")
+                if (
+                    type_close is None
+                    or type_close + 1 >= limit
+                    or not _identifier(tokens[type_close + 1])
+                ):
+                    return False
+                qualified_name += "." + _identifier(tokens[type_close + 1])
+                cursor = type_close + 2
+                continue
+            if not _identifier(tokens[cursor + 1]):
+                return False
             qualified_name += "." + _identifier(tokens[cursor + 1])
             cursor += 2
     is_factory = qualified_name in collection_factories
