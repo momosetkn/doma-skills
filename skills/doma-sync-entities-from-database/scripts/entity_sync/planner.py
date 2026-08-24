@@ -2203,7 +2203,7 @@ def _java_type_declarations(
     model bytecode, inherited generic substitutions, or dependency types.
     Those cases are represented as unresolved hierarchy edges and ignored.
     """
-    ranges: list[tuple[str, int, int, int]] = []
+    declarations: list[tuple[str, int, int, int]] = []
     for index, token in enumerate(tokens):
         if token.text not in {"class", "interface", "enum", "record"}:
             continue
@@ -2222,7 +2222,27 @@ def _java_type_declarations(
         close_index = _matching_token(tokens, open_index, "{", "}")
         if close_index is None:
             continue
-        fqcn = (package_name + "." if package_name else "") + _identifier(tokens[name_index])
+        declarations.append((
+            _identifier(tokens[name_index]), name_index, open_index, close_index
+        ))
+
+    # Java source addresses a nested type with the enclosing type path
+    # (``Outer.Use``), whereas its binary name uses ``$``.  Keep the source
+    # spelling as the canonical index; lookup helpers normalize either form
+    # at the visibility boundary.  This also prevents sibling nested types
+    # from collapsing into the same package-plus-simple-name entry.
+    ranges: list[tuple[str, int, int, int]] = []
+    for name, name_index, open_index, close_index in declarations:
+        enclosing = [
+            (parent_open, parent_fqcn)
+            for parent_fqcn, _, parent_open, parent_close in ranges
+            if parent_open < name_index < parent_close
+        ]
+        if enclosing:
+            parent_fqcn = max(enclosing)[1]
+            fqcn = parent_fqcn + "." + name
+        else:
+            fqcn = (package_name + "." if package_name else "") + name
         ranges.append((fqcn, name_index, open_index, close_index))
     return tuple(ranges)
 
@@ -2342,8 +2362,22 @@ def _java_type_name_tokens(tokens: Sequence[Token]) -> str:
 def _java_project_type_candidates(
     item: _SourceFile, raw: str, declarations: dict[str, int]
 ) -> frozenset[str]:
-    if "." in raw:
-        return frozenset({raw} if raw in declarations else set())
+    if "." in raw or "$" in raw:
+        # Qualified source names omit the package when referenced from the
+        # same package, while dependency/binary references may use ``$`` for
+        # nested types.  Compare all spellings against the canonical source
+        # declaration names without making a simple nested name global.
+        normalized = raw.replace("$", ".")
+        candidates = {normalized}
+        if _source_package(item):
+            candidates.add(_source_package(item) + "." + normalized)
+        candidates.update(
+            imported for imported in _source_imports(item)
+            if imported.replace("$", ".") in {normalized, *candidates}
+        )
+        return frozenset(
+            candidate for candidate in candidates if candidate in declarations
+        )
     imports = _source_imports(item)
     exact = {
         imported for imported in imports
@@ -2406,6 +2440,8 @@ def _java_entity_factory_keys(
         for method_index in range(open_index + 1, close_index - 1):
             if not _identifier(tokens[method_index]) or tokens[method_index + 1].text != "(":
                 continue
+            if _java_declaring_type_at(item, tokens, method_index) != fqcn:
+                continue
             if _java_method_name_is_call(tokens, method_index, open_index):
                 continue
             return_index = method_index - 1
@@ -2455,6 +2491,8 @@ def _java_entity_collection_factory_keys(
         simple_name = fqcn.rsplit(".", 1)[-1]
         for method_index in range(open_index + 1, close_index - 1):
             if not _identifier(tokens[method_index]) or tokens[method_index + 1].text != "(":
+                continue
+            if _java_declaring_type_at(item, tokens, method_index) != fqcn:
                 continue
             if _java_method_name_is_call(tokens, method_index, open_index):
                 continue
@@ -2781,15 +2819,42 @@ def _java_qualified_receiver_types(
     class_name: str,
     hierarchy_types: frozenset[str],
 ) -> frozenset[str]:
-    """Resolve a qualified class receiver to one project-local source type."""
-    if class_name in hierarchy_types:
-        return frozenset({class_name})
-    if "." in class_name:
-        return frozenset()
+    """Resolve a qualified class receiver to one project-local source type.
+
+    ``Outer.Use`` is the Java source spelling of a nested type and
+    ``Outer$Use`` is its binary spelling.  The hierarchy index stores the
+    source path, so normalize both before applying package/import visibility.
+    """
     imports = _source_imports(item)
+    normalized = class_name.replace("$", ".")
+    if "." in normalized:
+        qualified = {normalized}
+        package_name = _source_package(item)
+        if package_name:
+            qualified.add(package_name + "." + normalized)
+        qualified.update(
+            imported.replace("$", ".")
+            for imported in imports
+            if not imported.endswith(".*")
+            and imported.replace("$", ".").endswith("." + normalized)
+        )
+        qualified.update(
+            imported[:-2].replace("$", ".") + "." + normalized
+            for imported in imports if imported.endswith(".*")
+        )
+        return frozenset(candidate for candidate in qualified if candidate in hierarchy_types)
     return frozenset(
         candidate for candidate in hierarchy_types
-        if candidate.rsplit(".", 1)[-1] == class_name
+        if candidate.rsplit(".", 1)[-1] == normalized
+        and (
+            "." not in (
+                candidate.rsplit(".", 1)[0][len(_source_package(item)) + 1:]
+                if _source_package(item)
+                and candidate.rsplit(".", 1)[0].startswith(_source_package(item) + ".")
+                else candidate.rsplit(".", 1)[0]
+            )
+            or candidate in imports
+        )
         and (
             candidate.rsplit(".", 1)[0] == _source_package(item)
             or candidate in imports
@@ -3647,7 +3712,21 @@ def _available_entity_collection_factories(
                 # A fully-qualified project-local call does not require an import.
                 visible.setdefault(fq_name, set()).add(candidate)
                 class_name = receiver_type.rsplit(".", 1)[-1]
-                receiver_package = receiver_type.rsplit(".", 1)[0] if "." in receiver_type else ""
+                source_package = _source_package(item)
+                receiver_package = (
+                    source_package
+                    if source_package and (
+                        receiver_type == source_package
+                        or receiver_type.startswith(source_package + ".")
+                    )
+                    else receiver_type.rsplit(".", 1)[0]
+                    if "." in receiver_type else ""
+                )
+                if receiver_package == _source_package(item):
+                    # Keep the source-level nested path (``Outer.Use``) in
+                    # addition to the canonical package-qualified key.
+                    local_type = receiver_type[len(receiver_package) + 1:]
+                    visible.setdefault(local_type + "." + name, set()).add(candidate)
                 if (
                     receiver_type in imports
                     or receiver_package == _source_package(item)
