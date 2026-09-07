@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${AWS_CALL_LOG:?AWS_CALL_LOG is required}"
+: "${FIXTURE_DIR:?FIXTURE_DIR is required}"
+: "${FAKE_SCENARIO:?FAKE_SCENARIO is required}"
+printf '%q ' "$@" >> "$AWS_CALL_LOG"
+printf '\n' >> "$AWS_CALL_LOG"
+
+service=${1-}
+operation=${2-}
+
+has_arg_pair() {
+  local expected_option=$1
+  local expected_value=$2
+  shift 2
+  while (($# >= 2)); do
+    if [[ $1 == "$expected_option" && $2 == "$expected_value" ]]; then
+      return 0
+    fi
+    shift
+  done
+  return 1
+}
+
+require_arg_pair() {
+  local expected_option=$1
+  local expected_value=$2
+  shift 2
+  if ! has_arg_pair "$expected_option" "$expected_value" "$@"; then
+    printf 'missing exact argument pair: %s %s\n' "$expected_option" "$expected_value" >&2
+    exit 91
+  fi
+}
+
+first_call=$(sed -n '1p' "$AWS_CALL_LOG")
+if [[ $service:$operation != sts:get-caller-identity && $first_call != sts\ get-caller-identity\ * ]]; then
+  printf 'identity must be the first AWS call\n' >&2
+  exit 91
+fi
+
+require_arg_pair --region ap-northeast-1 "$@"
+if [[ " $* " != *' --no-cli-pager '* ]]; then
+  printf 'missing required argument: --no-cli-pager\n' >&2
+  exit 91
+fi
+
+case "$service:$operation:$FAKE_SCENARIO" in
+  sts:get-caller-identity:*) file=identity.txt ;;
+  rds:describe-db-clusters:aurora-postgresql)
+    require_arg_pair --db-cluster-identifier app-aurora-pg "$@"
+    file=aurora-postgresql-cluster.json
+    ;;
+  rds:describe-db-clusters:not-found)
+    require_arg_pair --db-cluster-identifier missing-cluster "$@"
+    file=not-found.json
+    ;;
+  rds:describe-db-instances:rds-postgresql)
+    require_arg_pair --db-instance-identifier app-rds-pg "$@"
+    file=rds-postgresql-instance.json
+    ;;
+  rds:describe-db-clusters:aurora-mysql)
+    require_arg_pair --db-cluster-identifier app-aurora-mysql "$@"
+    file=aurora-mysql-cluster.json
+    ;;
+  rds:describe-db-instances:rds-mysql)
+    require_arg_pair --db-instance-identifier app-rds-mysql "$@"
+    file=rds-mysql-instance.json
+    ;;
+  rds:describe-db-proxies:postgresql-proxy|rds:describe-db-proxies:postgresql-instance-proxy|rds:describe-db-proxies:proxy-unsupported-type|rds:describe-db-proxies:proxy-unresolvable|rds:describe-db-proxies:proxy-mixed-engines|rds:describe-db-proxies:proxy-unsupported-engine)
+    require_arg_pair --db-proxy-name app-proxy "$@"
+    file=postgresql-proxy.json
+    ;;
+  rds:describe-db-proxy-targets:postgresql-proxy)
+    require_arg_pair --db-proxy-name app-proxy "$@"
+    file=proxy-targets.json
+    ;;
+  rds:describe-db-proxy-targets:postgresql-instance-proxy)
+    require_arg_pair --db-proxy-name app-proxy "$@"
+    file=proxy-instance-targets.json
+    ;;
+  rds:describe-db-proxy-targets:proxy-unsupported-type)
+    require_arg_pair --db-proxy-name app-proxy "$@"
+    file=proxy-unsupported-type-targets.json
+    ;;
+  rds:describe-db-proxy-targets:proxy-unresolvable)
+    require_arg_pair --db-proxy-name app-proxy "$@"
+    file=proxy-unresolvable-targets.json
+    ;;
+  rds:describe-db-proxy-targets:proxy-mixed-engines)
+    require_arg_pair --db-proxy-name app-proxy "$@"
+    file=proxy-mixed-engine-targets.json
+    ;;
+  rds:describe-db-proxy-targets:proxy-unsupported-engine)
+    require_arg_pair --db-proxy-name app-proxy "$@"
+    file=proxy-unsupported-engine-targets.json
+    ;;
+  rds:describe-db-clusters:postgresql-proxy|rds:describe-db-clusters:proxy-mixed-engines)
+    require_arg_pair --db-cluster-identifier app-aurora-pg "$@"
+    file=aurora-postgresql-cluster.json
+    ;;
+  rds:describe-db-instances:postgresql-instance-proxy|rds:describe-db-instances:proxy-mixed-engines)
+    require_arg_pair --db-instance-identifier arn:aws:rds:ap-northeast-1:111122223333:db:app-rds-pg "$@"
+    file=rds-postgresql-instance.json
+    ;;
+  rds:describe-db-instances:proxy-unresolvable)
+    require_arg_pair --db-instance-identifier arn:aws:rds:ap-northeast-1:111122223333:db:missing "$@"
+    file=not-found.json
+    ;;
+  rds:describe-db-instances:proxy-unsupported-engine)
+    require_arg_pair --db-instance-identifier arn:aws:rds:ap-northeast-1:111122223333:db:app-mariadb "$@"
+    file=mariadb-instance.json
+    ;;
+  secretsmanager:describe-secret:*)
+    require_arg_pair --secret-id app/database "$@"
+    file=secret-metadata.json
+    ;;
+  *) printf 'unexpected operation: %s:%s for %s\n' "$service" "$operation" "$FAKE_SCENARIO" >&2; exit 90 ;;
+esac
+
+case "$service:$operation" in
+  sts:get-caller-identity)
+    require_arg_pair --query 'Account' "$@"
+    require_arg_pair --output 'text' "$@"
+    ;;
+  rds:describe-db-instances)
+    if [[ $FAKE_SCENARIO == rds-postgresql || $FAKE_SCENARIO == rds-mysql ]]; then
+      require_arg_pair --query 'DBInstances[0].{identifier:DBInstanceIdentifier,resource_id:DbiResourceId,engine:Engine,engine_version:EngineVersion,endpoint:Endpoint.Address,port:Endpoint.Port,iam_auth:IAMDatabaseAuthenticationEnabled,vpc_id:DBSubnetGroup.VpcId,security_group_ids:VpcSecurityGroups[].VpcSecurityGroupId}' "$@"
+      require_arg_pair --output 'json' "$@"
+    else
+      require_arg_pair --query 'DBInstances[0].[DBInstanceIdentifier,DbiResourceId,Engine,EngineVersion,Endpoint.Address,Endpoint.Port,IAMDatabaseAuthenticationEnabled]' "$@"
+      require_arg_pair --output 'text' "$@"
+    fi
+    ;;
+  rds:describe-db-clusters)
+    if [[ $FAKE_SCENARIO == aurora-postgresql || $FAKE_SCENARIO == aurora-mysql || $FAKE_SCENARIO == not-found ]]; then
+      require_arg_pair --query 'DBClusters[0].{identifier:DBClusterIdentifier,resource_id:DbClusterResourceId,engine:Engine,engine_version:EngineVersion,endpoint:Endpoint,reader_endpoint:ReaderEndpoint,port:Port,iam_auth:IAMDatabaseAuthenticationEnabled,subnet_group:DBSubnetGroup,security_group_ids:VpcSecurityGroups[].VpcSecurityGroupId}' "$@"
+      require_arg_pair --output 'json' "$@"
+    else
+      require_arg_pair --query 'DBClusters[0].[DBClusterIdentifier,DbClusterResourceId,Engine,EngineVersion,Endpoint,Port,IAMDatabaseAuthenticationEnabled]' "$@"
+      require_arg_pair --output 'text' "$@"
+    fi
+    ;;
+  rds:describe-db-proxies)
+    require_arg_pair --query 'DBProxies[0].{name:DBProxyName,arn:DBProxyArn,engine_family:EngineFamily,endpoint:Endpoint,require_tls:RequireTLS,idle_client_timeout:IdleClientTimeout,default_auth_scheme:DefaultAuthScheme,role_arn:RoleArn,vpc_id:VpcId,subnet_ids:VpcSubnetIds,security_group_ids:VpcSecurityGroupIds,auth:Auth[].{auth_scheme:AuthScheme,username:UserName,client_password_auth_type:ClientPasswordAuthType,iam_auth:IAMAuth,secret_arn:SecretArn}}' "$@"
+    require_arg_pair --output 'json' "$@"
+    ;;
+  rds:describe-db-proxy-targets)
+    require_arg_pair --query 'Targets[].[Type,RdsResourceId,not_null(TargetArn, `-`),not_null(TrackedClusterId, `-`),Endpoint,Port,not_null(Role, `UNKNOWN`),TargetHealth.State]' "$@"
+    require_arg_pair --output 'text' "$@"
+    ;;
+  secretsmanager:describe-secret)
+    require_arg_pair --query '{name:Name,arn:ARN,rotation_enabled:RotationEnabled,kms_key_id:KmsKeyId}' "$@"
+    require_arg_pair --output 'json' "$@"
+    ;;
+esac
+
+case "$service:$operation" in
+  rds:describe-db-proxy-targets)
+    python3 - "$FIXTURE_DIR/$file" <<'PY'
+import json
+import sys
+
+for target in json.load(open(sys.argv[1], encoding="utf-8")):
+    fields = [
+        target["type"],
+        target["rds_resource_id"],
+        target.get("target_arn") or "-",
+        target.get("tracked_cluster_id") or "-",
+        target["endpoint"],
+        str(target["port"]),
+        target.get("role") or "UNKNOWN",
+        target["target_health"],
+    ]
+    print("\t".join(fields))
+PY
+    ;;
+  rds:describe-db-instances|rds:describe-db-clusters)
+    if has_arg_pair --output text "$@"; then
+      if [[ $(sed -n '1p' "$FIXTURE_DIR/$file") == null ]]; then
+        printf 'None\n'
+      else
+        python3 - "$FIXTURE_DIR/$file" <<'PY'
+import json
+import sys
+
+item = json.load(open(sys.argv[1], encoding="utf-8"))
+values = [
+    item["identifier"], item["resource_id"], item["engine"],
+    item["engine_version"], item["endpoint"], str(item["port"]),
+    str(item["iam_auth"]),
+]
+print("\t".join(values))
+PY
+      fi
+    else
+      sed -n '1,$p' "$FIXTURE_DIR/$file"
+    fi
+    ;;
+  *) sed -n '1,$p' "$FIXTURE_DIR/$file" ;;
+esac

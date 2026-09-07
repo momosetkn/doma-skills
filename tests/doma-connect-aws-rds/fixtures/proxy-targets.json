@@ -1,0 +1,12 @@
+[
+  {
+    "endpoint": "app-aurora-pg.cluster-example.ap-northeast-1.rds.amazonaws.com",
+    "port": 5432,
+    "type": "TRACKED_CLUSTER",
+    "target_arn": "arn:aws:rds:ap-northeast-1:111122223333:cluster:app-aurora-pg",
+    "rds_resource_id": "cluster-ABCDEFGHIJKLMNOPQRSTU",
+    "tracked_cluster_id": "app-aurora-pg",
+    "role": "READ_WRITE",
+    "target_health": "AVAILABLE"
+  }
+]

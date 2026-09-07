@@ -1,0 +1,12 @@
+[
+  {
+    "endpoint": "app-mariadb.example.ap-northeast-1.rds.amazonaws.com",
+    "port": 3306,
+    "type": "RDS_INSTANCE",
+    "target_arn": "arn:aws:rds:ap-northeast-1:111122223333:db:app-mariadb",
+    "rds_resource_id": "app-mariadb",
+    "tracked_cluster_id": null,
+    "role": "READ_WRITE",
+    "target_health": "AVAILABLE"
+  }
+]

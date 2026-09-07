@@ -1,0 +1,12 @@
+[
+  {
+    "endpoint": "missing.example.ap-northeast-1.rds.amazonaws.com",
+    "port": 5432,
+    "type": "RDS_INSTANCE",
+    "target_arn": "arn:aws:rds:ap-northeast-1:111122223333:db:missing",
+    "rds_resource_id": "missing",
+    "tracked_cluster_id": null,
+    "role": "READ_WRITE",
+    "target_health": "UNAVAILABLE"
+  }
+]

@@ -30,6 +30,14 @@ Spring Boot、Quarkus、その他のフレームワーク統合、KAPT や KSP �
 
 Maven、Java のみのセットアップ、Spring Boot、Quarkus、その他のフレームワーク統合、KSP の設定、外部 SQL リソース、エンティティ・ドメイン・埋め込みクラスの設計、Criteria API および KQueryDsl、トランザクション、マイグレーション、広範なデータベース方言のガイダンスは対象外です。
 
+### `doma-connect-aws-rds`
+
+既存の素の Java または Kotlin の Doma アプリケーションを、既存の Amazon RDS PostgreSQL、Aurora PostgreSQL、RDS MySQL、Aurora MySQL に接続する、または接続の不具合を修復する場合にこのスキルを使用します。
+
+Direct JDBC、IAM データベース認証、Secrets Manager 連携、既存の RDS Proxy 経由の接続、AWS Advanced JDBC Wrapper、Doma の方言と `DataSource` の選択、段階的な接続検証、対象を絞った読み取り専用の AWS 調査を扱います。
+
+AWS の調査は読み取り専用で、シークレットの値を取得したり出力したりすることはありません。クラウドリソースのプロビジョニングや変更も行いません。フレームワークの配線とトランザクション、デプロイ、スキーマのマイグレーション、エンティティや業務 DAO の設計、スロークエリやインデックスのチューニングは対象外です。
+
 ### `doma-sync-entities-from-database`
 
 既存の Doma Gradle プロジェクトで、Doma CodeGen を設定し、選択した PostgreSQL または MySQL のテーブルから Java または Kotlin のエンティティ候補を生成し、既存エンティティと構造的に比較して、手書きコードを上書きすることなくデータベースを正とする確実な変更だけを適用する場合にこのスキルを使用します。
@@ -47,6 +55,7 @@ npx skills add momosetkn/doma-skills --list
 npx skills add momosetkn/doma-skills
 npx skills add momosetkn/doma-skills --skill doma-setup-project
 npx skills add momosetkn/doma-skills --skill doma-setup-kotlin-project
+npx skills add momosetkn/doma-skills --skill doma-connect-aws-rds
 npx skills add momosetkn/doma-skills --skill doma-sync-entities-from-database
 ```
 
@@ -62,6 +71,10 @@ Use $doma-setup-project to diagnose why this Maven build creates no generated DA
 
 ```text
 Use $doma-setup-kotlin-project to add Doma and KAPT to this Kotlin/JVM Gradle project and verify DAO generation.
+```
+
+```text
+Use $doma-connect-aws-rds to inspect the existing Aurora PostgreSQL target in ap-northeast-1 and connect this Kotlin Doma Lambda through its existing RDS Proxy with IAM authentication.
 ```
 
 ```text
