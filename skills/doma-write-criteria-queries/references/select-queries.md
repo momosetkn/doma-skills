@@ -43,7 +43,7 @@ val list = dsl.from(e) {
 }.fetch()
 ```
 
-Defaults: `allowEmptyWhere` is **true for selects** (a whole-table select is normal), `sqlLogType` is `FORMATTED`, and `fetchSize`, `maxRows`, and `queryTimeout` are 0, which defers to the same-named `Config` settings and ultimately the JDBC driver. `queryTimeout` counts **seconds** -- the examples' 1000 is nearly 17 minutes, not one second. `allowEmptyWhere = false` makes a select with no evaluated condition throw `EmptyWhereClauseException` instead of scanning the table -- a useful guard when every query is expected to be filtered.
+Defaults: `allowEmptyWhere` is **true for selects** (a whole-table select is normal), `sqlLogType` is `FORMATTED`, and `fetchSize`, `maxRows`, and `queryTimeout` are 0. In the Criteria API a 0 means Doma simply does not call the corresponding JDBC setter -- these select settings do **not** inherit the same-named `Config` values, so a project-wide `Config.getQueryTimeout()` does not apply to criteria selects. `queryTimeout` counts **seconds** -- the examples' 1000 is nearly 17 minutes, not one second. `allowEmptyWhere = false` makes a select with no evaluated condition throw `EmptyWhereClauseException` instead of scanning the table -- a useful guard when every query is expected to be filtered.
 
 ## Fetching
 
@@ -217,7 +217,7 @@ val list = dsl
     .fetch()
 ```
 
-This generates a row-constructor predicate (`where (ID, NAME) in ((?, ?), (?, ?))`), which not every database accepts: Doma's integration tests run the tuple forms only on H2, MySQL, PostgreSQL, SQLite, and Oracle. `KWhereDeclaration` exposes the `Tuple2` form only; the `Tuple3` form is Java-only. As with single-column `in`, a null right-hand list drops the predicate.
+This generates a row-constructor predicate (`where (ID, NAME) in ((?, ?), (?, ?))`), which not every database accepts: Doma's integration tests run the tuple forms only on H2, MySQL, PostgreSQL, SQLite, and Oracle. `KWhereDeclaration` exposes the `Tuple2` form only; the `Tuple3` form is Java-only. A null right-hand list drops the predicate, as with single-column `in` -- but an **empty** tuple list renders as `(ID, NAME) in (null, null)` rather than a null row constructor, and that shape's acceptance and result are not portable across databases. Guard empty tuple lists explicitly instead of relying on the single-column matches-nothing behavior.
 
 ## Joins
 
