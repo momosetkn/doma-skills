@@ -285,6 +285,8 @@ val list = dsl
 
 Associations are mandatory by default. When the join is conditional, pass `AssociationOption.optional()` as the last argument so the statement stays valid in the branch where the join is skipped. Chain several `associate` calls to build a wider graph; a projection method may follow the associations (`.associate(...).projectTo(e, e.employeeName)`).
 
+Association results are always fully buffered: after `associate`/`associateWith` the statement offers only the eager fetch methods (`fetch`, `fetchOne`, `fetchOptional`, and the eager `stream()`/`sequence()`), not `openStream`, `mapStream`, or `collect` -- linking parent and child rows requires the whole result. Do not plan an associated query for a result set that must not be materialized.
+
 ## Grouping and having
 
 `groupBy` takes property metamodels; when omitted, Doma infers the grouping from the select expression. Doma's documentation lists `eq`, `ne`, `ge`, `gt`, `le`, `lt` plus `and`, `or`, `not` for `having`; the declaration type shares WHERE's full comparison surface, and it is dynamic like WHERE.
@@ -402,7 +404,18 @@ var list = dsl
     .fetch();
 ```
 
-The derived-table subquery may itself be a union, and Kotlin has the same overload (`dsl.from(t, subquery)` on `KQueryDsl`). One `with` call can define several CTEs: Java overloads `with(List<WithContext>)` next to the single `with(metamodel, subquery)` form, and Kotlin's `dsl.with(a to queryA, b to queryB)` takes metamodel-to-operand pairs as varargs. CTE support is dialect-dependent; Doma's integration suite skips its CTE tests on MySQL.
+The derived-table subquery may itself be a union, and Kotlin has the same overload (`dsl.from(t, subquery)` on `KQueryDsl`).
+
+Common table expressions follow these rules:
+
+- The CTE's name is the entity's table name and its column list is the entity's column names, so `AverageSalary` becomes `with AVERAGE_SALARY(SALARY) as (...)`. The CTE entity can be a plain class or a record; it needs a metamodel like any other entity.
+- Declare several CTEs by chaining (`dsl.with(a, queryA).with(b, queryB)`), by passing `with(List<WithContext>)` in Java, or with varargs pairs in Kotlin (`dsl.with(a to queryA, b to queryB)`); `KWithQueryDsl` chains the same way.
+- To define two CTEs from the same entity class, name the second through the metamodel's table-name constructor: `var second = new DepartmentCount_("secondCte")`.
+- Join a CTE's metamodel exactly like a table: `.leftJoin(dcCte, on -> on.eq(e.departmentId, dcCte.departmentId))`.
+- `with(...)` returns a DSL whose only statement entry is `from`: **CTEs work with selects only**. There is no `with(...).insert/update/delete`, and no recursive CTE.
+- The `from` after `with` keeps the settings and derived-table overloads, so a CTE and a derived table can appear in the same statement, in Kotlin too.
+
+CTE support is dialect-dependent; Doma's integration suite skips the CTE cases on its older MySQL profile while running them on MySQL 8.
 
 ## References
 

@@ -177,6 +177,7 @@ val many = dsl.insert(d).multi(departments).returning().fetch()
 ```
 
 - `returning` is an entity-statement feature: it is available after `single` and `multi` for insert, and after `single` for update and delete. There is no returning form for `batch(...)`, nor for the set-based `values`, `select`, `set`, `where`, and `all` statements; use `multi` or re-select the rows.
+- `returning` combined with an upsert reflects what actually happened: when `onDuplicateKeyIgnore()` skips a duplicate, `fetchOne()` returns null (`fetchOptional()` is empty, and a multi-insert list omits the skipped rows).
 - Pass property metamodels to `returning(...)` to narrow the returned columns.
 - Java offers `fetchOptional()` and Kotlin `fetchOneOrNull()`; in Kotlin `fetchOne()`, `fetchOneOrNull()`, and `execute()` all return the same single result for these statements.
 - Doma documents support only for the H2, PostgreSQL, SQL Server, and SQLite dialects. Doma's integration tests additionally skip MySQL and Oracle. Do not propose `returning` for MySQL or Oracle; fetch the row again instead.
