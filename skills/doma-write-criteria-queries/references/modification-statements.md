@@ -196,16 +196,18 @@ val many = dsl.insert(d).multi(departments).returning().fetch()
 
 ## Settings
 
-| Setting | insert | update | delete | Effect |
-| --- | --- | --- | --- | --- |
-| `comment` / `queryTimeout` / `sqlLogType` | yes | yes | yes | SQL comment, JDBC timeout, log format |
-| `batchSize` | yes | yes | yes | rows per `executeBatch()` flush |
-| `excludeNull` | yes | yes | no | omits null properties from the statement |
-| `include` / `exclude` | yes | yes | no | restricts the affected properties |
-| `ignoreGeneratedKeys` | yes | no | no | skips retrieving generated keys |
-| `allowEmptyWhere` | no | yes | yes | permits a statement with no condition |
-| `ignoreVersion` | no | yes | yes | drops `@Version` from the WHERE clause |
-| `suppressOptimisticLockException` | no | yes | yes | returns count 0 instead of throwing |
+| Setting | insert | update | delete | Default | Effect |
+| --- | --- | --- | --- | --- | --- |
+| `comment` / `queryTimeout` / `sqlLogType` | yes | yes | yes | none / 0 / `FORMATTED` | SQL comment, JDBC timeout, log format |
+| `batchSize` | yes | yes | yes | 0 | rows per `executeBatch()` flush |
+| `excludeNull` | yes | yes | no | false | omits null properties from the statement |
+| `include` / `exclude` | yes | yes | no | empty | restricts the affected properties |
+| `ignoreGeneratedKeys` | yes | no | no | false | skips retrieving generated keys |
+| `allowEmptyWhere` | no | yes | yes | **false** | permits a statement with no condition |
+| `ignoreVersion` | no | yes | yes | false | drops `@Version` from the WHERE clause |
+| `suppressOptimisticLockException` | no | yes | yes | false | returns count 0 instead of throwing |
+
+A `batchSize` or `queryTimeout` of 0 or below falls back to the same-named `Config` value at prepare time, so the per-statement setting only overrides the project-wide one. Note the `allowEmptyWhere` asymmetry: selects default to true, set-based updates and deletes default to false.
 
 Each row is a JavaBean-style property on the settings object: booleans and values use `setXxx` (`settings.setExcludeNull(true)`, `settings.setIgnoreVersion(true)`), while `include` and `exclude` are varargs methods without the `set` prefix. Doma's documentation shows `settings.excludeNull(true)` in one example; that form does not exist on the settings classes, so use `setExcludeNull`.
 

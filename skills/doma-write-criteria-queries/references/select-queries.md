@@ -43,7 +43,7 @@ val list = dsl.from(e) {
 }.fetch()
 ```
 
-`allowEmptyWhere = false` makes a select with no evaluated condition throw `EmptyWhereClauseException` instead of scanning the table.
+Defaults: `allowEmptyWhere` is **true for selects** (a whole-table select is normal), `sqlLogType` is `FORMATTED`, and `fetchSize`, `maxRows`, and `queryTimeout` are 0, which defers to the same-named `Config` settings and ultimately the JDBC driver. `allowEmptyWhere = false` makes a select with no evaluated condition throw `EmptyWhereClauseException` instead of scanning the table -- a useful guard when every query is expected to be filtered.
 
 ## Fetching
 
@@ -152,7 +152,7 @@ val list = dsl
     .fetch()
 ```
 
-An `@Embeddable` property is reached through its nested metamodel field: `c.eq(e.empInfo.hiredate, date)`. Dynamic conditions need no builder: only the operators actually evaluated appear in the SQL, and a statement with none omits the WHERE clause entirely.
+An `@Embeddable` property is reached through its nested metamodel field: `c.eq(e.empInfo.hiredate, date)`. Varying `in`-list lengths defeat prepared-statement caching; `Config.getSqlBuilderSettings().shouldRequireInListPadding()` can pad the list to the next power of two -- a Config-level opt-in outside this skill's scope, noted because it changes the generated `in (...)`. Dynamic conditions need no builder: only the operators actually evaluated appear in the SQL, and a statement with none omits the WHERE clause entirely.
 
 ```java
 .where(c -> {
