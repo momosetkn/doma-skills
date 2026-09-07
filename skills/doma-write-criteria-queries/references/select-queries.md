@@ -291,7 +291,7 @@ Association results are always fully buffered: after `associate`/`associateWith`
 
 `groupBy` takes property metamodels; when omitted, Doma infers the grouping from the select expression. Doma's documentation lists `eq`, `ne`, `ge`, `gt`, `le`, `lt` plus `and`, `or`, `not` for `having`; the declaration type shares WHERE's full comparison surface, and it is dynamic like WHERE.
 
-Calling `groupBy` or `having` moves the statement into the projection family: the returned type no longer offers `associate`, `associateWith`, `project`, or `projectTo`. Build entity graphs before grouping, or aggregate in a separate query.
+Calling `groupBy` or `having` moves the statement into the projection family: the returned type no longer offers `associate`, `associateWith`, `project`, or `projectTo`, while `where`, `orderBy`, `limit`/`offset`, `distinct`, `forUpdate`, the `select` variants, `selectAsRow`, and `selectTo` remain available. Build entity graphs before grouping, or aggregate in a separate query.
 
 ```java
 List<Tuple2<Long, String>> list = dsl
