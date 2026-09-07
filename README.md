@@ -1,5 +1,7 @@
 # Doma Skills
 
+English | [日本語](README_ja.md)
+
 Installable [Agent Skills](https://agentskills.io/) for developers using Doma, the compile-time database access framework for Java and Kotlin.
 
 ## Available Skills
