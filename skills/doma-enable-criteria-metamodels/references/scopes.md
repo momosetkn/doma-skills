@@ -62,7 +62,7 @@ These are annotation processor errors, so the build fails before any query code 
 
 ## Kotlin limitation
 
-Generated scope methods return `Consumer<WhereDeclaration>` and similar Java declaration consumers. In the bundled `3.14.1-SNAPSHOT` source, `KQueryDsl`'s Kotlin declarations (`KWhereDeclaration`, `KHavingDeclaration`, `KOrderByNameDeclaration`) accept only Kotlin lambda blocks and expose no overload that takes a `Consumer` of the Java declaration, so a scope cannot be passed into a `KQueryDsl` clause directly. Use scopes from Java `QueryDsl` code, or express the shared condition as a Kotlin extension or helper function that applies the block. Re-check the current release notes before relying on scope support in `KQueryDsl`.
+Generated scope methods return `Consumer<WhereDeclaration>` and similar Java declaration consumers. As of Doma `3.14.0`, `KQueryDsl`'s Kotlin declarations (`KWhereDeclaration`, `KHavingDeclaration`, `KOrderByNameDeclaration`) accept only Kotlin lambda blocks and expose no overload that takes a `Consumer` of the Java declaration, so a scope cannot be passed into a `KQueryDsl` clause directly. Use scopes from Java `QueryDsl` code, or express the shared condition as a Kotlin extension or helper function that applies the block. Re-check the current release notes before relying on scope support in `KQueryDsl`.
 
 ## References
 

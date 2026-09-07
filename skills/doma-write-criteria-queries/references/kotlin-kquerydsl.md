@@ -54,7 +54,7 @@ Use `KExpressions` where Java uses a statically imported `Expressions`. It carri
 
 ## Known gaps
 
-Generated `@Metamodel(scopes = ...)` methods return Java `Consumer<WhereDeclaration>` and similar types. In the bundled `3.14.1-SNAPSHOT` source the Kotlin declarations accept only Kotlin blocks and expose no `Consumer` overload, so scopes cannot be passed into a `KQueryDsl` clause. Express the shared condition as a Kotlin function that applies the block instead:
+Generated `@Metamodel(scopes = ...)` methods return Java `Consumer<WhereDeclaration>` and similar types. As of Doma `3.14.0` the Kotlin declarations accept only Kotlin blocks and expose no `Consumer` overload, so scopes cannot be passed into a `KQueryDsl` clause. Express the shared condition as a Kotlin function that applies the block instead:
 
 ```kotlin
 fun KWhereDeclaration.onlyTokyo(d: Department_) = eq(d.location, "Tokyo")

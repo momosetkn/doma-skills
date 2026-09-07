@@ -292,7 +292,7 @@ val list = dsl.from(e).limit(5).offset(3).orderBy { asc(e.employeeNo) }.fetch()
 | `ForUpdateOption.wait(seconds, properties...)` | wait at most the given number of seconds |
 | `ForUpdateOption.none()` | build the call without emitting a lock clause |
 
-Locking support and each option are dialect-specific; the bundled integration suite skips the `forUpdate` test on SQLite. Verify against the target database before relying on a wait or no-wait variant, and prefer `@Version` optimistic locking when a pessimistic lock is not required.
+Locking support and each option are dialect-specific; Doma's integration suite skips the `forUpdate` test on SQLite. Verify against the target database before relying on a wait or no-wait variant, and prefer `@Version` optimistic locking when a pessimistic lock is not required.
 
 ## Unions
 
@@ -351,7 +351,7 @@ var list = dsl
     .fetch();
 ```
 
-In Kotlin, `dsl.with(a to cteQuery)` takes metamodel-to-operand pairs. CTE support is dialect-dependent; the bundled suite skips its CTE tests on MySQL.
+In Kotlin, `dsl.with(a to cteQuery)` takes metamodel-to-operand pairs. CTE support is dialect-dependent; Doma's integration suite skips its CTE tests on MySQL.
 
 ## References
 

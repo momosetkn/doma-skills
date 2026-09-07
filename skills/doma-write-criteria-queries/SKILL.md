@@ -70,7 +70,11 @@ Read [Criteria Troubleshooting](references/troubleshooting.md) and match the sym
 
 ## Boundary
 
-This skill covers writing Criteria API selects and modification statements with `QueryDsl` and `KQueryDsl`. It excludes generating and naming metamodel classes, `@Metamodel(scopes = ...)` definition, entity, domain, and embeddable design, project and annotation-processor setup, two-way SQL templates and `@Select`/`@Insert` DAO methods, aggregate strategies with `@AggregateStrategy` and `@AssociationLinker` (a DAO SQL feature, not a Criteria API one), stored procedures and functions, transaction and `Config` construction, and schema migration. Database-specific behavior is stated only where the bundled documentation or integration tests establish it.
+This skill covers writing Criteria API selects and modification statements with `QueryDsl` and `KQueryDsl`. It excludes generating and naming metamodel classes, `@Metamodel(scopes = ...)` definition, entity, domain, and embeddable design, project and annotation-processor setup, two-way SQL templates and `@Select`/`@Insert` DAO methods, aggregate strategies with `@AggregateStrategy` and `@AssociationLinker` (a DAO SQL feature, not a Criteria API one), stored procedures and functions, transaction and `Config` construction, and schema migration. Database-specific behavior is stated only where Doma's own documentation or integration tests establish it.
+
+## Version baseline
+
+This skill targets released Doma `3.14.0`; every API, default, and diagnostic described here is verified against that version. Keep the Doma version the project already selected, and re-check the official documentation for a newer release before relying on these rules there. Two kinds of statement age fastest and should be confirmed against the target database as well: the dialect limits for `returning`, common table expressions, and `forUpdate`, and the `KQueryDsl` gaps noted in [Kotlin KQueryDsl](references/kotlin-kquerydsl.md#known-gaps).
 
 ## References
 

@@ -165,7 +165,7 @@ val many = dsl.insert(d).multi(departments).returning().fetch()
 - `returning` is available after `single` and `multi`, and for update and delete after `single`. There is no returning form for `batch(...)`; use `multi` or re-select.
 - Pass property metamodels to `returning(...)` to narrow the returned columns.
 - Java offers `fetchOptional()` and Kotlin `fetchOneOrNull()`; in Kotlin `fetchOne()`, `fetchOneOrNull()`, and `execute()` all return the same single result for these statements.
-- Doma documents support only for the H2, PostgreSQL, SQL Server, and SQLite dialects. The bundled integration tests additionally skip MySQL and Oracle. Do not propose `returning` for MySQL or Oracle; fetch the row again instead.
+- Doma documents support only for the H2, PostgreSQL, SQL Server, and SQLite dialects. Doma's integration tests additionally skip MySQL and Oracle. Do not propose `returning` for MySQL or Oracle; fetch the row again instead.
 
 ## Settings
 

@@ -63,6 +63,10 @@ Instances are cheap and are created per query; two instances of the same metamod
 
 This skill covers only making metamodel classes exist and be named as intended. It excludes writing Criteria API queries and statements, entity, domain, and embeddable design, initial project and annotation-processor setup, DAO and two-way SQL generation, KSP, aggregate strategies and `@AssociationLinker`, and runtime `Config` construction. Choosing whether newly generated entity candidates carry the `metamodel` element -- the Doma CodeGen `useMetamodel` setting -- belongs to database-driven entity generation, not here; this skill works on entities that already exist in the project. Metamodels are generated for `@Entity` classes only; `@Domain` and `@Embeddable` classes never get one.
 
+## Version baseline
+
+This skill targets released Doma `3.14.0`. The option names, the `prefix`/`suffix` precedence, the DOMA4455 rule, and the scope diagnostics are verified against that version. Keep the Doma version the project already selected, and re-check the official documentation for a newer release before relying on these rules there. `3.14.0` names the behavior this guidance describes; it is not a claim about the latest stable release.
+
 ## References
 
 - [Doma 3.14.0: Annotation processing options](https://docs.domaframework.org/en/3.14.0/annotation-processing/)
