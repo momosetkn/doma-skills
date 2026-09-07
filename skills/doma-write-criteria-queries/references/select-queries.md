@@ -74,6 +74,22 @@ try (Stream<Employee> stream = dsl.from(e).openStream()) {
 Map<Integer, List<Employee>> map = dsl.from(e).collect(groupingBy(Employee::getDepartmentId));
 ```
 
+`stream()` is **not** one of these: it is defined as `execute().stream()`, so it fetches the whole result into a list first and only then streams over it. For a result set that should never be fully materialized, use `openStream`, `mapStream`, or `collect`.
+
+Kotlin has its own pair on the same statements:
+
+```kotlin
+// mapSequence hands you a lazy Sequence and closes the underlying resources for you.
+val map = dsl.from(e).mapSequence { seq -> seq.groupBy { it.departmentId } }
+
+// openStream returns a java.util.stream.Stream that you MUST close.
+dsl.from(e).openStream().use { stream ->
+    stream.forEach { /* ... */ }
+}
+```
+
+`sequence()` also exists on Kotlin statements, but like Java's `stream()` it is built from the already-fetched list, so it does not bound memory.
+
 ## Projection
 
 | Method | Result type | Duplicates |
@@ -88,6 +104,8 @@ Map<Integer, List<Employee>> map = dsl.from(e).collect(groupingBy(Employee::getD
 | `selectTo(e, e.employeeName)` | partly-filled entity | kept |
 
 `projectTo` and `selectTo` always add the entity's ID properties to the select list, so the returned entities are identifiable. In a tuple, an entity element is null when all of its properties are null, which is the normal outcome of a left join.
+
+Read a tuple with `getItem1()` .. `getItem9()`; Kotlin can also destructure it through `component1()` .. `component9()`. A `Row` is keyed by property metamodel rather than by index, so read it with `row.get(e.employeeName)`, and inspect it with `containsKey`, `keySet`, `values`, and `size`.
 
 ```java
 List<Tuple2<Department, Employee>> list = dsl

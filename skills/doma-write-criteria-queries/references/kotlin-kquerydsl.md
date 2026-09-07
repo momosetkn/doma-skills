@@ -40,6 +40,10 @@ Declarations are receiver lambdas: there is no `c` parameter, and every operator
 | Entity statement | `execute()` returns `Result`/`BatchResult`/`MultiResult` | same types; read `result.count` and `result.entity` |
 | `returning()` for one row | `fetchOne()` / `fetchOptional()` | `fetchOne()`, `fetchOneOrNull()`, and `execute()` all return the same single value |
 | Projection with `project` / `projectTo` | `fetch()` | `fetch()` |
+| Lazy processing of a large result | `mapStream(...)` / `collect(...)` / `openStream()` | `mapSequence { seq -> ... }` / `openStream()` |
+| Eager stream or sequence over the fetched list | `stream()` | `sequence()` |
+
+`mapSequence` is the Kotlin counterpart of `mapStream` and gives the block a lazy `Sequence`; there is no `collect`. `sequence()` and Java's `stream()` both build on the already-fetched list, so neither bounds memory.
 
 The `fetchOne()` difference is the most common Kotlin-specific bug: code ported from Java keeps `fetchOne()` and starts throwing instead of returning null.
 

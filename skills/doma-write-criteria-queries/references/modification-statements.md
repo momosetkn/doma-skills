@@ -162,7 +162,7 @@ val updated = dsl.update(e).single(employee).returning().fetchOne()
 val many = dsl.insert(d).multi(departments).returning().fetch()
 ```
 
-- `returning` is available after `single` and `multi`, and for update and delete after `single`. There is no returning form for `batch(...)`; use `multi` or re-select.
+- `returning` is an entity-statement feature: it is available after `single` and `multi` for insert, and after `single` for update and delete. There is no returning form for `batch(...)`, nor for the set-based `values`, `select`, `set`, `where`, and `all` statements; use `multi` or re-select the rows.
 - Pass property metamodels to `returning(...)` to narrow the returned columns.
 - Java offers `fetchOptional()` and Kotlin `fetchOneOrNull()`; in Kotlin `fetchOne()`, `fetchOneOrNull()`, and `execute()` all return the same single result for these statements.
 - Doma documents support only for the H2, PostgreSQL, SQL Server, and SQLite dialects. Doma's integration tests additionally skip MySQL and Oracle. Do not propose `returning` for MySQL or Oracle; fetch the row again instead.
@@ -179,6 +179,8 @@ val many = dsl.insert(d).multi(departments).returning().fetch()
 | `allowEmptyWhere` | no | yes | yes | permits a statement with no condition |
 | `ignoreVersion` | no | yes | yes | drops `@Version` from the WHERE clause |
 | `suppressOptimisticLockException` | no | yes | yes | returns count 0 instead of throwing |
+
+Each row is a JavaBean-style property on the settings object: booleans and values use `setXxx` (`settings.setExcludeNull(true)`, `settings.setIgnoreVersion(true)`), while `include` and `exclude` are varargs methods without the `set` prefix. Doma's documentation shows `settings.excludeNull(true)` in one example; that form does not exist on the settings classes, so use `setExcludeNull`.
 
 ```java
 Result<Department> result = dsl.insert(d, settings -> settings.exclude(d.departmentName, d.location))

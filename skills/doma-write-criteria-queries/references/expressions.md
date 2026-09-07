@@ -6,6 +6,7 @@
 - [String functions](#string-functions)
 - [Literals](#literals)
 - [CASE](#case)
+- [Column aliases](#column-aliases)
 - [Subquery values](#subquery-values)
 - [User-defined expressions](#user-defined-expressions)
 - [User-defined operators](#user-defined-operators)
@@ -102,6 +103,21 @@ val list = dsl
 ```
 
 Inside the `case` block the receiver is the Java `CaseExpression.Declaration`, so its `eq`, `ne`, `ge`, and related methods take `(left, right, then)` and the operands are built with the Java `Expressions` class even in Kotlin code. A block that adds no branch yields the ELSE value for every row.
+
+## Column aliases
+
+`Expressions.alias(property, "NAME")` adds an alias to a column in the select clause. Doma recommends using it only in the `select` and `orderBy` of the projection family, which is where standard SQL accepts an alias:
+
+```java
+List<Tuple2<String, Long>> list = dsl
+    .from(e)
+    .groupBy(e.departmentId)
+    .orderBy(c -> c.asc(alias(count(), "CNT")))
+    .select(alias(e.employeeName, "NAME"), alias(count(), "CNT"))
+    .fetch();
+```
+
+An alias is also what makes a derived-table subquery's columns line up with the entity that receives them. `KExpressions` has no `alias`; Kotlin code calls the Java `Expressions.alias` directly.
 
 ## Subquery values
 
