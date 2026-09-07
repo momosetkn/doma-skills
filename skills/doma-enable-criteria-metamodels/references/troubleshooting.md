@@ -35,7 +35,7 @@ Work through the matching section in order. Never disable `doma.sql.validation` 
 [DOMA4455] The combination of the prefix="_" and the suffix="" is not allowed.
 ```
 
-`prefix = "_"` with an empty suffix collides with the `_Employee` entity meta class Doma generates. Give a non-empty suffix or pick another prefix. `prefix = "Q"` with an empty suffix is accepted, so do not generalize this to all empty suffixes.
+The rule, the `_Employee` collision behind it, and the fix live in [Metamodel Naming](metamodel-naming.md#doma4455-the-reserved-underscore-prefix) -- in short, give a non-empty suffix or pick a prefix other than `_`.
 
 ## The IDE reports an error but the build succeeds
 

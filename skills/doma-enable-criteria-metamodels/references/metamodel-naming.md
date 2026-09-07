@@ -2,7 +2,7 @@
 
 - [Default names](#default-names)
 - [Precedence](#precedence)
-- [DOMA4455: the reserved `_` prefix](#doma4455-the-reserved--prefix)
+- [DOMA4455: the reserved underscore prefix](#doma4455-the-reserved-underscore-prefix)
 - [Renaming an established project](#renaming-an-established-project)
 - [References](#references)
 
@@ -25,7 +25,7 @@ public class Employee { /* ... */ }
 
 The class above is generated as `MyEmployeeMetamodel`. With `-Adoma.metamodel.prefix=Q -Adoma.metamodel.suffix=Metamodel` and a plain `@Metamodel`, the same entity produces `QEmployeeMetamodel`.
 
-## DOMA4455: the reserved `_` prefix
+## DOMA4455: the reserved underscore prefix
 
 `prefix = "_"` combined with an empty suffix is rejected at compile time:
 

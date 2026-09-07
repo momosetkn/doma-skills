@@ -67,7 +67,7 @@ Duplicate removal depends on the projection method: no projection method removes
 
 | Feature | Established support |
 | --- | --- |
-| `returning()` | Documented for the H2, PostgreSQL, SQL Server, and SQLite dialects. Doma's integration tests additionally skip MySQL and Oracle. |
+| `returning()` | H2, PostgreSQL, SQL Server, and SQLite only -- canonical list and details in [Modification Statements](modification-statements.md#returning). |
 | Common table expressions | Select-only; Doma's integration tests skip the CTE cases on its older MySQL profile and run them on MySQL 8. |
 | `forUpdate()` | Doma's integration test for it skips SQLite. Locking options beyond a plain `for update` are dialect-specific. |
 | Upsert (`onDuplicateKeyUpdate` / `onDuplicateKeyIgnore`) | Emulated per dialect; verify the generated SQL. |

@@ -62,7 +62,7 @@ DAO および 2-way SQL の生成、KSP、集約ストラテジー、生成す�
 バッチおよび複数行文・`returning` 句・楽観ロックが対象です。
 
 このスキルは、文の形式の選択、結果を静かに変えてしまう規則（右辺が null の条件は消える、空リストの `in` は
-`in (null)` になる、エンティティ単位と条件単位の意味の違い、`select` と `project` の重複除去の違い）、
+`in (null)` になる、エンティティに基づく文（single/batch/multi）と値・条件を直接指定する set-based の文（values/set/where）の意味の違い、`select` と `project` の重複除去の違い）、
 `EmptyWhereClauseException` と `OptimisticLockException` への対処、`Expressions` と `KExpressions`、
 `fetchOne` と `fetchOneOrNull` のような Java と Kotlin の差異、`returning`・CTE・`forUpdate` の方言上の制限、
 `asSql()` による確認、旧来の Entityql および NativeSql DSL からの移行を扱います。

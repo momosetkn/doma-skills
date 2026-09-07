@@ -200,7 +200,7 @@ val many = dsl.insert(d).multi(departments).returning().fetch()
 
 | Setting | insert | update | delete | Default | Effect |
 | --- | --- | --- | --- | --- | --- |
-| `comment` / `queryTimeout` / `sqlLogType` | yes | yes | yes | none / 0 / `FORMATTED` | SQL comment, JDBC timeout, log format |
+| `comment` / `queryTimeout` / `sqlLogType` | yes | yes | yes | none / 0 / `FORMATTED` | SQL comment, JDBC timeout in seconds, log format |
 | `batchSize` | yes | yes | yes | 0 | rows per `executeBatch()` flush |
 | `excludeNull` | yes | yes | no | false | omits null properties from the statement |
 | `include` / `exclude` | yes | yes | no | empty | restricts the affected properties |
@@ -225,7 +225,7 @@ val result = dsl.update(e) { suppressOptimisticLockException = true }.single(emp
 
 ## Very large batches
 
-`batchSize` bounds how many rows are flushed per `executeBatch()` call, not how many `PreparedSql` objects exist at once, so hundreds of thousands of entities can exhaust the heap even with a small batch size. Doma documents an opt-in fix: override `Config.getQueryImplementors()` to return the chunked `AutoBatchInsertQuery`, `AutoBatchUpdateQuery`, and `AutoBatchDeleteQuery` implementations, which build SQL one entity at a time. Nothing changes unless the `QueryImplementors` are swapped.
+`batchSize` bounds how many rows are flushed per `executeBatch()` call, not how many `PreparedSql` objects exist at once, so hundreds of thousands of entities can exhaust the heap even with a small batch size. Doma documents an opt-in fix: override `Config.getQueryImplementors()` to return `ChunkedAutoBatchInsertQuery`, `ChunkedAutoBatchUpdateQuery`, and `ChunkedAutoBatchDeleteQuery` (subclasses of the default auto batch queries), which build SQL one entity at a time. Nothing changes unless the `QueryImplementors` are swapped.
 
 ## References
 

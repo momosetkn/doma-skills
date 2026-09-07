@@ -43,7 +43,7 @@ val list = dsl.from(e) {
 }.fetch()
 ```
 
-Defaults: `allowEmptyWhere` is **true for selects** (a whole-table select is normal), `sqlLogType` is `FORMATTED`, and `fetchSize`, `maxRows`, and `queryTimeout` are 0, which defers to the same-named `Config` settings and ultimately the JDBC driver. `allowEmptyWhere = false` makes a select with no evaluated condition throw `EmptyWhereClauseException` instead of scanning the table -- a useful guard when every query is expected to be filtered.
+Defaults: `allowEmptyWhere` is **true for selects** (a whole-table select is normal), `sqlLogType` is `FORMATTED`, and `fetchSize`, `maxRows`, and `queryTimeout` are 0, which defers to the same-named `Config` settings and ultimately the JDBC driver. `queryTimeout` counts **seconds** -- the examples' 1000 is nearly 17 minutes, not one second. `allowEmptyWhere = false` makes a select with no evaluated condition throw `EmptyWhereClauseException` instead of scanning the table -- a useful guard when every query is expected to be filtered.
 
 ## Fetching
 
@@ -52,7 +52,7 @@ Defaults: `allowEmptyWhere` is **true for selects** (a whole-table select is nor
 | `fetch()` | `fetch()` | `List` of results |
 | `fetchOne()` | `fetchOne()` | Java returns null when there is no row; **Kotlin throws `NoSuchElementException`** |
 | `fetchOptional()` | `fetchOneOrNull()` | `Optional` in Java, nullable in Kotlin |
-| `stream()` | `stream()` | stream of results |
+| `stream()` | `sequence()` | eager stream/sequence built from the fetched list -- Kotlin statements have no `stream()` |
 
 ```java
 Employee employee = dsl.from(e).where(c -> c.eq(e.employeeId, 1)).fetchOne();
@@ -90,6 +90,8 @@ dsl.from(e).openStream().use { stream ->
 ```
 
 `sequence()` also exists on Kotlin statements, but like Java's `stream()` it is built from the already-fetched list, so it does not bound memory.
+
+Even the lazy methods cannot bound memory on their own: whether rows actually stream from the server is decided by the JDBC driver and the `fetchSize` setting above, and several drivers buffer the entire result set unless their documented streaming conditions are met. Set `fetchSize` (and any driver-specific options) per your driver's documentation before relying on `openStream`/`mapStream` for very large results.
 
 ## Projection
 
