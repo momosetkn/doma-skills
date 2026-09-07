@@ -1,6 +1,7 @@
 # Modification Statements
 
 - [Two families of statements](#two-families-of-statements)
+  - [What only entity-based statements do](#what-only-entity-based-statements-do)
 - [Insert](#insert)
 - [Upsert](#upsert)
 - [Update](#update)
@@ -24,6 +25,18 @@ Java examples assume `QueryDsl dsl = new QueryDsl(config);`; Kotlin examples ass
 
 Choose the family from the caller's intent, not from convenience. Replacing an entity update with a set-based update silently removes optimistic locking.
 
+### What only entity-based statements do
+
+Entity statements run through Doma's auto queries, so they carry entity semantics that set-based statements never apply:
+
+- **Entity listeners.** `preInsert`, `preUpdate`, and `preDelete` hooks on the entity's listener run, and a listener may replace the entity instance. `values`/`set`/`where` statements invoke no listener.
+- **`@OriginalStates`.** When the entity holds original states, only the properties that actually changed appear in the SET clause. If nothing changed, no UPDATE statement is issued at all and the count is zero, which is not an error.
+- **`@GeneratedValue`.** Insert prepares id generation and populates the generated id on the returned entity (`result.getEntity()`).
+- **`@TenantId`.** The tenant column is added to the WHERE clause of entity updates and deletes and is excluded from the SET clause. A set-based update or delete filters by the tenant only if you write that condition yourself, so a multi-tenant application must add it explicitly.
+- **`@Id` validation.** The statement fails when a required id property is absent.
+
+When a fix moves work from one family to the other, re-check every item above.
+
 ## Insert
 
 ```java
@@ -39,6 +52,8 @@ val multi = dsl.insert(d).multi(departments).execute()
 ```
 
 `batch` sends one statement per entity in a JDBC batch; `multi` sends a single `values (...), (...)` statement. A unique constraint violation raises `UniqueConstraintException` unless an upsert clause handles it.
+
+When the entity's id generator cannot retrieve generated keys in a JDBC batch, Doma executes the statements one by one instead so the ids can still be read; the call looks batched but performs one round trip per entity. Set `ignoreGeneratedKeys` when the generated ids are not needed and real batching matters more.
 
 ## Upsert
 
@@ -147,6 +162,7 @@ val updated = dsl.update(e).single(employee).returning().fetchOne()
 val many = dsl.insert(d).multi(departments).returning().fetch()
 ```
 
+- `returning` is available after `single` and `multi`, and for update and delete after `single`. There is no returning form for `batch(...)`; use `multi` or re-select.
 - Pass property metamodels to `returning(...)` to narrow the returned columns.
 - Java offers `fetchOptional()` and Kotlin `fetchOneOrNull()`; in Kotlin `fetchOne()`, `fetchOneOrNull()`, and `execute()` all return the same single result for these statements.
 - Doma documents support only for the H2, PostgreSQL, SQL Server, and SQLite dialects. The bundled integration tests additionally skip MySQL and Oracle. Do not propose `returning` for MySQL or Oracle; fetch the row again instead.

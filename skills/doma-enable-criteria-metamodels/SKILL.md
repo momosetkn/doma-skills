@@ -33,6 +33,19 @@ The Criteria API (`QueryDsl`, `KQueryDsl`) can only reference entity properties 
 5. Reference the generated class from the query code only after step 4 succeeds: metamodels are generated into the entity's own package, and are instantiated per query (`Employee_ e = new Employee_();` / `val e = Employee_()`).
 6. If generation or compilation fails, work through [Metamodel Troubleshooting](references/troubleshooting.md) in order instead of disabling validation options.
 
+## What the generated class contains
+
+A metamodel is a plain class in the entity's package implementing `EntityMetamodel<ENTITY>`:
+
+- one `public final PropertyMetamodel<T>` field per persistent property, named after the **property**, not the column;
+- a no-arg constructor, plus a constructor taking a qualified table name that overrides the entity's default table for that instance;
+- `asType()` and `allPropertyMetamodels()`;
+- any methods generated from the `scopes` element.
+
+Non-persistent members have no property metamodel, so an association field or a `@Transient` field is absent by design. Immutable entities, Kotlin data classes, and Java records all support metamodels; the annotation goes on the entity declaration in every case (`@Entity(immutable = true, metamodel = @Metamodel)`, `@Entity(metamodel = @Metamodel) public record AverageSalary(Salary salary) {}`).
+
+Instances are cheap and are created per query; two instances of the same metamodel represent two occurrences of the table, which is how a self-join is expressed.
+
 ## Reusable query conditions
 
 `@Metamodel(scopes = { DepartmentScope.class })` adds generated condition methods to the metamodel. The scope class shape is checked at compile time (DOMA4457, DOMA4458, DOMA4459). Read [Scopes](references/scopes.md) when defining one.

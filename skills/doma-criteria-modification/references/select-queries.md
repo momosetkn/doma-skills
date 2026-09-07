@@ -5,6 +5,7 @@
 - [Streaming](#streaming)
 - [Projection](#projection)
 - [Where conditions](#where-conditions)
+  - [LIKE options and wildcard escaping](#like-options-and-wildcard-escaping)
 - [Joins](#joins)
 - [Associations](#associations)
 - [Grouping and having](#grouping-and-having)
@@ -145,6 +146,36 @@ Dynamic conditions need no builder: only the operators actually evaluated appear
 
 Null and empty-collection semantics decide whether a filter exists at all; see the rules in `SKILL.md`. The property-to-property overloads (`c.eq(e.departmentId, d.departmentId)`) reject null and throw `NullPointerException` instead of dropping the condition.
 
+### LIKE options and wildcard escaping
+
+`like(property, value)` and `notLike(property, value)` bind the value with `LikeOption.none()`, which performs **no escaping**: any `%` or `_` inside the value acts as a wildcard. Search text that came from a caller must therefore pass an explicit option.
+
+| Option | Effect |
+| --- | --- |
+| `LikeOption.none()` | default; binds the value as-is, no `escape` clause |
+| `LikeOption.escape()` / `escape(char)` | escapes wildcards in the value; default escape character is `$` |
+| `LikeOption.prefix()` / `prefix(char)` | escapes the value, then appends `%` (starts-with search) |
+| `LikeOption.infix()` / `infix(char)` | escapes the value, then wraps it in `%` (contains search) |
+| `LikeOption.suffix()` / `suffix(char)` | escapes the value, then prepends `%` (ends-with search) |
+
+Every option other than `none` escapes through the dialect's `ExpressionFunctions` and appends `escape '<char>'` to the SQL.
+
+```java
+List<Employee> list = dsl
+    .from(e)
+    .where(c -> c.like(e.employeeName, userInput, LikeOption.prefix()))
+    .fetch();
+```
+
+```kotlin
+val list = dsl
+    .from(e)
+    .where { like(e.employeeName, userInput, LikeOption.prefix()) }
+    .fetch()
+```
+
+Kotlin's `like` and `notLike` declare the option parameter with a default of `LikeOption.none()`, so omitting it is the same unescaped behavior as in Java. Do not hand-build `"%" + input + "%"` and pass it with `none()`; that reintroduces the wildcard injection the options exist to prevent.
+
 ## Joins
 
 `innerJoin` and `leftJoin` are the supported join expressions. Their `on` declaration is dynamic in the same way as WHERE: if no operator is evaluated, the join is omitted from the SQL.
@@ -217,6 +248,8 @@ Associations are mandatory by default. When the join is conditional, pass `Assoc
 
 `groupBy` takes property metamodels; when omitted, Doma infers the grouping from the select expression. `having` supports `eq`, `ne`, `ge`, `gt`, `le`, `lt` plus `and`, `or`, `not`, and is dynamic like WHERE.
 
+Calling `groupBy` or `having` moves the statement into the projection family: the returned type no longer offers `associate`, `associateWith`, `project`, or `projectTo`. Build entity graphs before grouping, or aggregate in a separate query.
+
 ```java
 List<Tuple2<Long, String>> list = dsl
     .from(e)
@@ -238,7 +271,7 @@ val list = dsl
 
 ## Ordering, paging, distinct
 
-`orderBy` supports `asc` and `desc` and is dynamic. `limit` and `offset` accept null, in which case the corresponding clause is omitted, so a nullable page size needs no conditional code. `distinct()` adds `select distinct`.
+`orderBy` supports `asc` and `desc` and is dynamic. `limit` and `offset` accept null, in which case the corresponding clause is omitted, so a nullable page size needs no conditional code. `distinct()` adds `select distinct`, and `distinct(DistinctOption)` takes `DistinctOption.basic()` for the same effect or `DistinctOption.none()` to build the call without emitting `distinct`, which keeps a dynamically chosen option out of the surrounding `if`.
 
 ```java
 List<Employee> list = dsl.from(e).limit(5).offset(3).orderBy(c -> c.asc(e.employeeNo)).fetch();
@@ -250,11 +283,20 @@ val list = dsl.from(e).limit(5).offset(3).orderBy { asc(e.employeeNo) }.fetch()
 
 ## Row locking
 
-`forUpdate()` appends `for update`. Locking support and locking options are dialect-specific; the bundled integration suite skips this test on SQLite. Verify against the target database before relying on it, and prefer `@Version` optimistic locking when a pessimistic lock is not required.
+`forUpdate()` appends `for update`. `forUpdate(ForUpdateOption)` selects the variant:
+
+| Option | Meaning |
+| --- | --- |
+| `ForUpdateOption.basic(properties...)` | plain `for update`, optionally `of` the given columns |
+| `ForUpdateOption.noWait(properties...)` | fail instead of waiting for the lock |
+| `ForUpdateOption.wait(seconds, properties...)` | wait at most the given number of seconds |
+| `ForUpdateOption.none()` | build the call without emitting a lock clause |
+
+Locking support and each option are dialect-specific; the bundled integration suite skips the `forUpdate` test on SQLite. Verify against the target database before relying on a wait or no-wait variant, and prefer `@Version` optimistic locking when a pessimistic lock is not required.
 
 ## Unions
 
-`union` and `unionAll` combine set operands whose select lists match. Order a union result by column index:
+`union` and `unionAll` are the only set operations in the Criteria API; there is no `intersect` or `except`, and no recursive CTE. They combine set operands whose select lists match. Order a union result by column index:
 
 ```java
 List<Tuple2<Integer, String>> list = dsl
