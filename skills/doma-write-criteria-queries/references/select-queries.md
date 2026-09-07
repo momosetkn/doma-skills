@@ -6,6 +6,7 @@
 - [Projection](#projection)
 - [Where conditions](#where-conditions)
   - [LIKE options and wildcard escaping](#like-options-and-wildcard-escaping)
+  - [Multi-column IN](#multi-column-in)
 - [Joins](#joins)
 - [Associations](#associations)
 - [Grouping and having](#grouping-and-having)
@@ -194,6 +195,28 @@ val list = dsl
 
 Kotlin's `like` and `notLike` declare the option parameter with a default of `LikeOption.none()`, so omitting it is the same unescaped behavior as in Java. Do not hand-build `"%" + input + "%"` and pass it with `none()`; that reintroduces the wildcard injection the options exist to prevent.
 
+### Multi-column IN
+
+`in` and `notIn` also accept a `Tuple2` or `Tuple3` of property metamodels on the left, with a list of value tuples or a matching subquery on the right — the composite-key form of IN:
+
+```java
+List<Employee> list = dsl
+    .from(e)
+    .where(c -> c.in(
+        new Tuple2<>(e.employeeId, e.employeeName),
+        Arrays.asList(new Tuple2<>(2, "ALLEN"), new Tuple2<>(3, "WARD"))))
+    .fetch();
+```
+
+```kotlin
+val list = dsl
+    .from(e)
+    .where { `in`(Tuple2(e.employeeId, e.employeeName), listOf(Tuple2(2, "ALLEN"), Tuple2(3, "WARD"))) }
+    .fetch()
+```
+
+This generates a row-constructor predicate (`where (ID, NAME) in ((?, ?), (?, ?))`), which not every database accepts: Doma's integration tests run the tuple forms only on H2, MySQL, PostgreSQL, SQLite, and Oracle. `KWhereDeclaration` exposes the `Tuple2` form only; the `Tuple3` form is Java-only. As with single-column `in`, a null right-hand list drops the predicate.
+
 ## Joins
 
 `innerJoin` and `leftJoin` are the supported join expressions. Their `on` declaration is dynamic in the same way as WHERE: if no operator is evaluated, the join is omitted from the SQL.
@@ -346,6 +369,16 @@ val list = dsl
 
 Kotlin needs backticks for `in` because it is a keyword.
 
+`exists` and `notExists` take the same `c.from(...)` subquery, and the outer metamodel may be referenced inside it, which makes the subquery correlated:
+
+```java
+List<Employee> list = dsl
+    .from(e)
+    .where(c -> c.exists(
+        c.from(e2).where(c2 -> c2.eq(e.employeeId, e2.managerId)).select(e2.managerId)))
+    .fetch();
+```
+
 A derived table and a CTE each require an entity class, with a metamodel, whose properties match the subquery's select list:
 
 ```java
@@ -369,7 +402,7 @@ var list = dsl
     .fetch();
 ```
 
-In Kotlin, `dsl.with(a to cteQuery)` takes metamodel-to-operand pairs. CTE support is dialect-dependent; Doma's integration suite skips its CTE tests on MySQL.
+One `with` call can define several CTEs: Java overloads `with(List<WithContext>)` next to the single `with(metamodel, subquery)` form, and Kotlin's `dsl.with(a to queryA, b to queryB)` takes metamodel-to-operand pairs as varargs. CTE support is dialect-dependent; Doma's integration suite skips its CTE tests on MySQL.
 
 ## References
 
