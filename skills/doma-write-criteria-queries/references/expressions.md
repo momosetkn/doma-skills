@@ -62,7 +62,7 @@ int count = dsl.update(e)
 
 ## Literals
 
-`literal` supports the basic data types and **embeds the value directly in the SQL instead of binding it**. Use it for constants that must appear in the SQL text, never for values that come from outside the program.
+`literal` supports the basic data types and **embeds the value directly in the SQL instead of binding it**. Use it for constants that must appear in the SQL text, never for values that come from outside the program. `literal(String)` refuses a value containing a single quotation mark with `DomaIllegalArgumentException`, so a quote can never be smuggled into the SQL text.
 
 ```java
 Employee employee = dsl.from(e).where(c -> c.eq(e.employeeId, literal(1))).fetchOne();
@@ -102,7 +102,7 @@ val list = dsl
     .fetch()
 ```
 
-Inside the `case` block the receiver is the Java `CaseExpression.Declaration`, so its `eq`, `ne`, `ge`, and related methods take `(left, right, then)` and the operands are built with the Java `Expressions` class even in Kotlin code. A block that adds no branch yields the ELSE value for every row.
+Inside the `case` block the receiver is the Java `CaseExpression.Declaration`, so its `eq`, `ne`, `ge`, and related methods take `(left, right, then)` and the operands are built with the Java `Expressions` class even in Kotlin code. The comparison value does not have to be a literal -- a plain value binds as a parameter (`c.eq(e.employeeName, "SMITH", lower(e.employeeName))`). As in WHERE, a null comparison value silently drops that WHEN branch, and a block that ends up adding no branch yields the ELSE value for every row.
 
 ## Column aliases
 

@@ -104,7 +104,7 @@ dsl.from(e).openStream().use { stream ->
 | `projectTo(e, e.employeeName)` | partly-filled entity | removed by entity ID |
 | `selectTo(e, e.employeeName)` | partly-filled entity | kept |
 
-`projectTo` and `selectTo` always add the entity's ID properties to the select list, so the returned entities are identifiable. In a tuple, an entity element is null when all of its properties are null, which is the normal outcome of a left join.
+`projectTo` and `selectTo` always add the entity's ID properties to the select list, so the returned entities are identifiable. They accept only the entity's own property metamodels: an expression such as `sum(...)` or `concat(...)` is rejected at execution time with DOMA6008. In a tuple, an entity element is null when all of its properties are null, which is the normal outcome of a left join.
 
 Read a tuple with `getItem1()` .. `getItem9()`; Kotlin can also destructure it through `component1()` .. `component9()`. A `Row` is keyed by property metamodel rather than by index, so read it with `row.get(e.employeeName)`, and inspect it with `containsKey`, `keySet`, `values`, and `size`.
 
@@ -379,7 +379,7 @@ List<Employee> list = dsl
     .fetch();
 ```
 
-A derived table and a CTE each require an entity class, with a metamodel, whose properties match the subquery's select list:
+A derived table and a CTE each require an entity class, with a metamodel, whose properties match the subquery's select list. The match is checked at execution time: the subquery must select exactly as many columns as the outer entity has properties (DOMA6011 otherwise), and computed, literal, or union columns should be named with `Expressions.alias(expr, t.prop.getName())` so they line up with the outer entity's columns:
 
 ```java
 NameAndAmount_ t = new NameAndAmount_();
@@ -402,7 +402,7 @@ var list = dsl
     .fetch();
 ```
 
-One `with` call can define several CTEs: Java overloads `with(List<WithContext>)` next to the single `with(metamodel, subquery)` form, and Kotlin's `dsl.with(a to queryA, b to queryB)` takes metamodel-to-operand pairs as varargs. CTE support is dialect-dependent; Doma's integration suite skips its CTE tests on MySQL.
+The derived-table subquery may itself be a union, and Kotlin has the same overload (`dsl.from(t, subquery)` on `KQueryDsl`). One `with` call can define several CTEs: Java overloads `with(List<WithContext>)` next to the single `with(metamodel, subquery)` form, and Kotlin's `dsl.with(a to queryA, b to queryB)` takes metamodel-to-operand pairs as varargs. CTE support is dialect-dependent; Doma's integration suite skips its CTE tests on MySQL.
 
 ## References
 

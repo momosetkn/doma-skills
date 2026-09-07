@@ -9,6 +9,7 @@
 - [Unexpected duplicate rows](#unexpected-duplicate-rows)
 - [Association properties are null or empty](#association-properties-are-null-or-empty)
 - [A feature fails on one database only](#a-feature-fails-on-one-database-only)
+- [Runtime DOMA6xxx diagnostics](#runtime-doma6xxx-diagnostics)
 - [Compilation cannot resolve the metamodel](#compilation-cannot-resolve-the-metamodel)
 - [Migrating from Entityql and NativeSql](#migrating-from-entityql-and-nativesql)
 
@@ -72,6 +73,21 @@ Duplicate removal depends on the projection method: no projection method removes
 | Upsert (`onDuplicateKeyUpdate` / `onDuplicateKeyIgnore`) | Emulated per dialect; verify the generated SQL. |
 
 Match the `Dialect` configured in `Config` to the actual database, then print the SQL and, when necessary, replace the feature (for example, re-select instead of `returning`).
+
+## Runtime DOMA6xxx diagnostics
+
+The Criteria API reports statement-construction mistakes at execution time with `DOMA6xxx` messages. Match the code:
+
+| Code | Cause | Fix |
+| --- | --- | --- |
+| DOMA6001 / DOMA6010 | `associate` / `associateWith` on an entity that was not passed to `from`, `innerJoin`, or `leftJoin` | Join the entity first; for a conditional join pass `AssociationOption.optional()` |
+| DOMA6002 | A projected property is not part of the select list | Add the property to `select(...)` |
+| DOMA6003 / DOMA6004 | No table or column alias for a metamodel -- typically a second metamodel instance was created and used in `where`/`select` while a different instance was passed to `from` | Reuse the one instance per table occurrence everywhere in the statement |
+| DOMA6006 | Empty WHERE clause (`EmptyWhereClauseException`) | See [EmptyWhereClauseException](#emptywhereclauseexception) |
+| DOMA6007 / DOMA6008 | `selectTo`/`projectTo` given an entity not in the statement, or given an expression -- `sum`, `concat`, and other expressions are not supported there | Pass only the target entity's own property metamodels |
+| DOMA6009 | `select` given a property whose entity is not in the statement | Join that entity or select from the right metamodel |
+| DOMA6011 | Derived table: the subquery's select list has a different number of columns than the outer entity has properties | Make the counts match; alias computed columns with `Expressions.alias(expr, t.prop.getName())` |
+| DOMA6012 / DOMA6013 | A property or entity type in the result mapping does not match | Re-check the metamodel instances used in `project`/`select` |
 
 ## Compilation cannot resolve the metamodel
 

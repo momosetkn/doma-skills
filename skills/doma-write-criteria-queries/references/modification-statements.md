@@ -30,8 +30,9 @@ Choose the family from the caller's intent, not from convenience. Replacing an e
 Entity statements run through Doma's auto queries, so they carry entity semantics that set-based statements never apply:
 
 - **Entity listeners.** `preInsert`, `preUpdate`, and `preDelete` hooks on the entity's listener run, and a listener may replace the entity instance. `values`/`set`/`where` statements invoke no listener.
-- **`@OriginalStates`.** When the entity holds original states, only the properties that actually changed appear in the SET clause. If nothing changed, no UPDATE statement is issued at all and the count is zero, which is not an error.
+- **`@OriginalStates`.** When the entity holds original states, only the properties that actually changed appear in the SET clause. If nothing changed -- or the entity has no updatable non-ID properties at all -- no UPDATE statement is issued, the result carries no counts, and no `OptimisticLockException` is raised.
 - **`@GeneratedValue`.** Insert prepares id generation and populates the generated id on the returned entity (`result.getEntity()`).
+- **`@Version` initialization.** Entity insert sets the version to 1 when it is unset or below 0 (an explicitly set value above 0 is kept); set-based `values` inserts write exactly what you pass.
 - **`@TenantId`.** The tenant column is added to the WHERE clause of entity updates and deletes and is excluded from the SET clause. A set-based update or delete filters by the tenant only if you write that condition yourself, so a multi-tenant application must add it explicitly.
 - **`@Id` validation.** The statement fails when a required id property is absent.
 
@@ -53,7 +54,7 @@ val multi = dsl.insert(d).multi(departments).execute()
 
 `batch` sends one statement per entity in a JDBC batch; `multi` sends a single `values (...), (...)` statement. A unique constraint violation raises `UniqueConstraintException` unless an upsert clause handles it.
 
-When the entity's id generator cannot retrieve generated keys in a JDBC batch, Doma executes the statements one by one instead so the ids can still be read; the call looks batched but performs one round trip per entity. Set `ignoreGeneratedKeys` when the generated ids are not needed and real batching matters more.
+An empty list passed to `batch` or `multi` executes no SQL and returns an empty result. When the entity's id generator cannot retrieve generated keys in a JDBC batch, Doma executes the statements one by one instead so the ids can still be read; the call looks batched but performs one round trip per entity. Set `ignoreGeneratedKeys` when the generated ids are not needed and real batching matters more.
 
 ## Upsert
 
@@ -98,7 +99,7 @@ int count = dsl
     .execute();
 ```
 
-Emulation of `INSERT ... ON CONFLICT` differs per database, so verify the generated SQL with `asSql()` against the target dialect.
+When `keys(...)` is omitted, the conflict target defaults to the entity's ID properties; when `set(...)` is omitted on the `values` form, the update assigns every inserted value except the keys. Emulation of `INSERT ... ON CONFLICT` differs per database, so verify the generated SQL with `asSql()` against the target dialect -- and note the affected-row count: MySQL and MariaDB report 2 when the upsert updates an existing row, where other databases report 1.
 
 ## Update
 
@@ -147,9 +148,9 @@ val deleted = dsl.delete(e).where { ge(e.salary, Salary("2000")) }.execute()
 val all = dsl.delete(e).all().execute()
 ```
 
-A set-based update or delete whose WHERE declaration evaluates no operator throws `EmptyWhereClauseException`. Enable the `allowEmptyWhere` setting only when the caller really means every row, and prefer `all()` because it states that intent in the code.
+A set-based update or delete whose WHERE declaration evaluates no operator throws `EmptyWhereClauseException` (DOMA6006). Only delete offers `all()`; prefer it there because it states the intent in the code. Update has no `all()`, so a deliberate whole-table update must enable the `allowEmptyWhere` setting.
 
-INSERT SELECT copies rows between structurally identical tables, which pairs with the metamodel table-name constructor:
+INSERT SELECT copies rows between structurally identical tables, which pairs with the metamodel table-name constructor; the inner query may also name the selected properties explicitly (`c.from(d).where(...).select(d.departmentId, d.departmentNo, ...)`):
 
 ```java
 Department_ da = new Department_("DEPARTMENT_ARCHIVE");
