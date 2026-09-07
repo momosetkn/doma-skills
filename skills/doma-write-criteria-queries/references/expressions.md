@@ -183,6 +183,24 @@ var list = dsl.from(d)
     .fetch();
 ```
 
+Kotlin declarations expose the same hook with a constructor reference and a receiver lambda, backed by `KUserDefinedCriteriaContext`:
+
+```kotlin
+class MyExtension(private val context: KUserDefinedCriteriaContext) {
+    fun regexp(propertyMetamodel: PropertyMetamodel<String>, regexp: String) {
+        context.add { b ->
+            b.appendExpression(propertyMetamodel)
+            b.appendSql(" ~ ")
+            b.appendParameter(propertyMetamodel, regexp)
+        }
+    }
+}
+
+val list = dsl.from(d)
+    .where { extension(::MyExtension) { regexp(d.departmentName, "A") } }
+    .fetch()
+```
+
 Operators written this way emit database-specific SQL (`~` is PostgreSQL syntax here), so keep them behind a dialect-aware boundary.
 
 ## References

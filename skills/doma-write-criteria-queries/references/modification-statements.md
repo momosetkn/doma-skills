@@ -85,7 +85,7 @@ Read the outcome from the result, because the returned entity is always your inp
 
 An upsert is not an optimistic-locking statement: it performs no `@Version` check and never throws `OptimisticLockException`; the failure it converts is the `UniqueConstraintException` a plain insert would have thrown.
 
-Upsert SQL is assembled per dialect. The H2, SQL Server, MySQL/MariaDB, Oracle, PostgreSQL, and SQLite dialects implement it; a dialect without an implementation -- including `StandardDialect`, DB2, and HSQLDB -- throws `JdbcUnsupportedOperationException` at execution time.
+Upsert SQL is assembled per dialect. The H2, SQL Server, MySQL/MariaDB, Oracle, PostgreSQL, and SQLite dialects implement it; a dialect without an implementation -- including `StandardDialect`, DB2, and HSQLDB -- throws `JdbcUnsupportedOperationException` at execution time. `MysqlDialect` additionally carries a version flavor whose default is `MySqlVersion.V5`: on MySQL 8 configure `new MysqlDialect(MySqlVersion.V8)`, because the V5 and V8 assemblers generate different upsert SQL.
 
 With `values`, the conflict target and the assignments can be stated explicitly, and `c.excluded(...)` refers to the proposed row:
 
@@ -166,6 +166,8 @@ INSERT SELECT copies rows between structurally identical tables, which pairs wit
 Department_ da = new Department_("DEPARTMENT_ARCHIVE");
 int count = dsl.insert(da).select(c -> c.from(d).where(cc -> cc.in(d.departmentId, List.of(1, 2)))).execute();
 ```
+
+Null right-hand values behave opposite to WHERE here: `values` and `set` have no null-drop, so `c.value(d.location, null)` binds NULL and writes it. Dropping the assignment requires not calling `value` for that property (`excludeNull` covers the entity forms). The `values` block itself accepts only plain values -- expressions and subqueries are for `set` in updates.
 
 A table name passed to a metamodel constructor is validated: quotes, semicolons, double hyphens, and comment sequences raise `DomaIllegalArgumentException`. Never build it from user input.
 

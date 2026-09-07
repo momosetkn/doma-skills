@@ -415,7 +415,7 @@ Common table expressions follow these rules:
 - `with(...)` returns a DSL whose only statement entry is `from`: **CTEs work with selects only**. There is no `with(...).insert/update/delete`, and no recursive CTE.
 - The `from` after `with` keeps the settings and derived-table overloads, so a CTE and a derived table can appear in the same statement, in Kotlin too.
 
-CTE support is dialect-dependent; Doma's integration suite skips the CTE cases on its older MySQL profile while running them on MySQL 8.
+CTE support is dialect-dependent; Doma's integration suite skips the CTE cases on its older MySQL profile while running them on MySQL 8, where `MysqlDialect` should be constructed with `MySqlVersion.V8` (the default flavor is V5).
 
 ## References
 
