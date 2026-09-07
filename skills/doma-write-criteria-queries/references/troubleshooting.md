@@ -13,7 +13,7 @@
 - [Compilation cannot resolve the metamodel](#compilation-cannot-resolve-the-metamodel)
 - [Migrating from Entityql and NativeSql](#migrating-from-entityql-and-nativesql)
 
-Always start by printing the SQL. `stmt.asSql().getFormattedSql()` builds the statement without executing it, and `peek` shows intermediate stages; a missing clause in that output identifies the cause immediately.
+Always start by printing the SQL. `stmt.asSql().getFormattedSql()` builds the statement without executing it, and `peek` shows intermediate stages; a missing clause in that output identifies the cause immediately. On an entity-based statement, `asSql()` runs the prepare pipeline -- listeners fire and a SEQUENCE/TABLE ID is fetched from the database -- so prefer diagnosing those against a select or set-based reproduction when side effects matter.
 
 ## Too many rows came back
 

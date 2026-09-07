@@ -7,7 +7,7 @@
 - [Naming collisions with Kotlin keywords](#naming-collisions-with-kotlin-keywords)
 - [Known gaps](#known-gaps)
 
-`KQueryDsl` wraps the Java `QueryDsl`, so every statement form and every SQL feature is the same. Only the surface differs, and the differences below are the ones that cause real defects.
+`KQueryDsl` wraps the Java `QueryDsl`, so the statement families and generated SQL largely map one-to-one -- but the Kotlin API surface has real gaps (`having` operators, upsert `keys`, scopes; see [Known gaps](#known-gaps)) and different result semantics. Do not assume a Java method exists in Kotlin without checking this file.
 
 ## Setup
 

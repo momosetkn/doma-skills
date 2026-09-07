@@ -25,7 +25,7 @@ The Criteria API builds SQL from typed metamodels at runtime. Most defects are n
 | A joined entity graph in one round trip | `innerJoin`/`leftJoin` plus `associate` (mutable) or `associateWith` (immutable) | [Select Queries](references/select-queries.md#associations) |
 | Specific columns, tuples, rows, or a partly-filled entity | `select`, `selectAsRow`, `selectTo`, `project`, `projectTo` | [Select Queries](references/select-queries.md#projection) |
 | Aggregates, arithmetic, string functions, CASE, literals, subquery values | `Expressions` (Java) / `KExpressions` (Kotlin) | [Expressions](references/expressions.md) |
-| Insert, update, or delete entity instances you already hold | `insert/update/delete(e).single(entity)`, `.batch(list)`, `.multi(list)` | [Modification Statements](references/modification-statements.md) |
+| Insert, update, or delete entity instances you already hold | `insert/update/delete(e).single(entity)`, `.batch(list)`; insert alone adds `.multi(list)` | [Modification Statements](references/modification-statements.md) |
 | Set-based insert, update, or delete by condition | `insert(e).values(...)`, `insert(e).select(...)`, `update(e).set(...).where(...)`, `delete(e).where(...)` | [Modification Statements](references/modification-statements.md#set-based-statements) |
 | Read back the rows a statement wrote | `.returning()` | [Modification Statements](references/modification-statements.md#returning) |
 | Any of the above in Kotlin | `KQueryDsl`, whose shape differs in named ways | [Kotlin KQueryDsl](references/kotlin-kquerydsl.md) |
@@ -52,7 +52,7 @@ Sql<?> sql = stmt.asSql();
 System.out.println(sql.getFormattedSql());
 ```
 
-`asSql()` constructs the SQL without touching the database, so it is the cheapest way to prove a dynamic condition survived. Use `peek` to inspect intermediate stages of a chain. Confirm in the printed SQL that every condition you intended is present, then execute.
+For selects and set-based statements, `asSql()` builds the SQL without touching the database, so it is the cheapest way to prove a dynamic condition survived. **Entity-based statements are different**: their `asSql()` (and `peek`, which calls it) runs the same prepare pipeline as execution -- entity listeners fire, `@Version` is initialized, and a SEQUENCE- or TABLE-generated ID is fetched from the database at that moment. Treat entity-statement `asSql()` as a dry run with side effects, not a pure formatter. Confirm in the printed SQL that every condition you intended is present, then execute.
 
 ## When results or statements are wrong
 
