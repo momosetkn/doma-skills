@@ -1,0 +1,6 @@
+// HANDWRITTEN-BEGIN:customer-key
+    /** Application-owned customer key. */
+    public String customerKey() {
+        return tenantId + ":" + customerId;
+    }
+// HANDWRITTEN-END:customer-key

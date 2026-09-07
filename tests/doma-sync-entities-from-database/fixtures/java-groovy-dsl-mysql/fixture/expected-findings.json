@@ -1,0 +1,18 @@
+[
+  {
+    "path": "src/main/java/example/entity/Customer.java",
+    "table": {"catalog": "fixture_catalog", "schema": null, "table": "customer"},
+    "column": "email",
+    "status": "SAFE",
+    "kind": "add-property",
+    "edit_count": 2
+  },
+  {
+    "path": "src/main/java/example/entity/Invoice.java",
+    "table": {"catalog": "fixture_catalog", "schema": null, "table": "invoice"},
+    "column": null,
+    "status": "BLOCKED",
+    "kind": "domain-basic-mismatch",
+    "edit_count": 0
+  }
+]

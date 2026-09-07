@@ -1,0 +1,7 @@
+// HANDWRITTEN-BEGIN:ledger-data-class
+data class Ledger(
+    @Id
+    @Column(name = "ledger_id")
+    val ledgerId: Long,
+)
+// HANDWRITTEN-END:ledger-data-class

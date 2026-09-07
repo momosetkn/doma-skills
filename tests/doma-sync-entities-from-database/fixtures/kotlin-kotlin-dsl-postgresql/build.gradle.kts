@@ -1,0 +1,17 @@
+plugins {
+    kotlin("jvm") version "2.3.20"
+    kotlin("kapt") version "2.3.20"
+}
+
+repositories {
+    mavenCentral()
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+dependencies {
+    implementation("org.seasar.doma:doma-core:3.14.0")
+    kapt("org.seasar.doma:doma-processor:3.14.0")
+}

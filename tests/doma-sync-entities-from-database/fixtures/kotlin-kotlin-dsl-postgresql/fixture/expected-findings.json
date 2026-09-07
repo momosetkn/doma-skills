@@ -1,0 +1,26 @@
+[
+  {
+    "path": "src/main/kotlin/example/entity/Customer.kt",
+    "table": {"catalog": null, "schema": "public", "table": "customer"},
+    "column": null,
+    "status": "BLOCKED",
+    "kind": "unsupported-source",
+    "edit_count": 0
+  },
+  {
+    "path": "src/main/kotlin/example/entity/Customer.kt",
+    "table": {"catalog": null, "schema": "public", "table": "customer"},
+    "column": "nickname",
+    "status": "SAFE",
+    "kind": "add-property",
+    "edit_count": 1
+  },
+  {
+    "path": "src/main/kotlin/example/entity/Ledger.kt",
+    "table": {"catalog": null, "schema": "public", "table": "ledger"},
+    "column": null,
+    "status": "BLOCKED",
+    "kind": "kotlin-primary-constructor",
+    "edit_count": 0
+  }
+]

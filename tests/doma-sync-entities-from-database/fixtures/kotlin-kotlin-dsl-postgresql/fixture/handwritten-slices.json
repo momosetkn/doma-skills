@@ -1,0 +1,14 @@
+[
+  {
+    "path": "src/main/kotlin/example/entity/Customer.kt",
+    "start": "// HANDWRITTEN-BEGIN:kotlin-display",
+    "end": "// HANDWRITTEN-END:kotlin-display",
+    "expected": "fixture/expected/kotlin-display.txt"
+  },
+  {
+    "path": "src/main/kotlin/example/entity/Ledger.kt",
+    "start": "// HANDWRITTEN-BEGIN:ledger-data-class",
+    "end": "// HANDWRITTEN-END:ledger-data-class",
+    "expected": "fixture/expected/ledger-data-class.txt"
+  }
+]

@@ -1,0 +1,4 @@
+// HANDWRITTEN-BEGIN:audited-label
+    /** Application-owned audited label. */
+    fun auditedLabel(): String = "audited-$customerId"
+// HANDWRITTEN-END:audited-label

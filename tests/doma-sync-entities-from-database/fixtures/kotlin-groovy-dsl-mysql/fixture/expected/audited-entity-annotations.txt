@@ -1,0 +1,4 @@
+// HANDWRITTEN-BEGIN:audited-entity-annotations
+@Audited
+@Entity(metamodel = Metamodel())
+// HANDWRITTEN-END:audited-entity-annotations
