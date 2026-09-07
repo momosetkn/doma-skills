@@ -63,6 +63,19 @@ When the entity's id generator cannot retrieve generated keys in a JDBC batch, D
 Result<Department> result = dsl.insert(d).single(department).onDuplicateKeyUpdate().execute();
 ```
 
+On every entity form the upsert clause also accepts an explicit conflict target via `keys(...)`, and the single form keeps `returning()` after it:
+
+```java
+Department merged = dsl.insert(d)
+    .single(department)
+    .onDuplicateKeyUpdate()
+    .keys(d.departmentId)
+    .returning()
+    .fetchOne();
+```
+
+The update assignments of an entity-form upsert always come from the entity itself; only the `values` form takes an explicit `set(...)` block. In Kotlin, `KEntityqlUpsertStatement` exposes `returning()` and `execute()` but no `keys(...)` -- an upsert that must name its conflict target needs the `values` form or Java there.
+
 With `values`, the conflict target and the assignments can be stated explicitly, and `c.excluded(...)` refers to the proposed row:
 
 ```java

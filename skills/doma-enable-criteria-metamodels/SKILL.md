@@ -42,7 +42,7 @@ A metamodel is a plain class in the entity's package implementing `EntityMetamod
 - `asType()` and `allPropertyMetamodels()`;
 - any methods generated from the `scopes` element.
 
-Non-persistent members have no property metamodel, so an association field or a `@Transient` field is absent by design. Immutable entities, Kotlin data classes, and Java records all support metamodels; the annotation goes on the entity declaration in every case (`@Entity(immutable = true, metamodel = @Metamodel)`, `@Entity(metamodel = @Metamodel) public record AverageSalary(Salary salary) {}`).
+An `@Embeddable` property becomes a field of the embeddable's own nested metamodel type (generated as `_EmpInfo.Metamodel`), named after the property; its members are the embeddable's property metamodels, so query code reaches them by dot chain (`e.empInfo.hiredate`), and nested embeddables nest further. A `@Domain` property is a single `PropertyMetamodel<Name>` compared against whole domain values. `Optional<T>`, `OptionalInt`, `OptionalLong`, and `OptionalDouble` properties surface as the element type (`PropertyMetamodel<String>`, `PropertyMetamodel<Integer>`, ...), not as the optional wrapper. Non-persistent members have no property metamodel, so an association field or a `@Transient` field is absent by design. Immutable entities, Kotlin data classes, and Java records all support metamodels; the annotation goes on the entity declaration in every case (`@Entity(immutable = true, metamodel = @Metamodel)`, `@Entity(metamodel = @Metamodel) public record AverageSalary(Salary salary) {}`).
 
 Instances are cheap and are created per query; two instances of the same metamodel represent two occurrences of the table, which is how a self-join is expressed.
 

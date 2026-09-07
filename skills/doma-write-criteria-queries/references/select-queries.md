@@ -152,7 +152,7 @@ val list = dsl
     .fetch()
 ```
 
-Dynamic conditions need no builder: only the operators actually evaluated appear in the SQL, and a statement with none omits the WHERE clause entirely.
+An `@Embeddable` property is reached through its nested metamodel field: `c.eq(e.empInfo.hiredate, date)`. Dynamic conditions need no builder: only the operators actually evaluated appear in the SQL, and a statement with none omits the WHERE clause entirely.
 
 ```java
 .where(c -> {
@@ -219,7 +219,7 @@ This generates a row-constructor predicate (`where (ID, NAME) in ((?, ?), (?, ?)
 
 ## Joins
 
-`innerJoin` and `leftJoin` are the supported join expressions. Their `on` declaration is dynamic in the same way as WHERE: if no operator is evaluated, the join is omitted from the SQL.
+`innerJoin` and `leftJoin` are the supported join expressions. The `on` declaration shares WHERE's full operator surface in both languages -- the declaration types extend the same `ComparisonDeclaration`, so `ne`, `ge`, `gt`, `le`, `lt`, `isNull`, `isNotNull`, `between`, `in`, `like`, `exists`, and the logical operators are all available, not just the `eq` the documentation showcases (the CTE example below joins on `ge`). It is dynamic in the same way as WHERE: if no operator is evaluated, the join is omitted from the SQL, and a null right-hand value drops that condition.
 
 ```java
 List<Employee> list = dsl
@@ -287,7 +287,7 @@ Associations are mandatory by default. When the join is conditional, pass `Assoc
 
 ## Grouping and having
 
-`groupBy` takes property metamodels; when omitted, Doma infers the grouping from the select expression. `having` supports `eq`, `ne`, `ge`, `gt`, `le`, `lt` plus `and`, `or`, `not`, and is dynamic like WHERE.
+`groupBy` takes property metamodels; when omitted, Doma infers the grouping from the select expression. Doma's documentation lists `eq`, `ne`, `ge`, `gt`, `le`, `lt` plus `and`, `or`, `not` for `having`; the declaration type shares WHERE's full comparison surface, and it is dynamic like WHERE.
 
 Calling `groupBy` or `having` moves the statement into the projection family: the returned type no longer offers `associate`, `associateWith`, `project`, or `projectTo`. Build entity graphs before grouping, or aggregate in a separate query.
 
