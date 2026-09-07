@@ -60,7 +60,7 @@ It excludes writing Criteria API queries, entity, domain, and embeddable design,
 DAO and two-way SQL generation, KSP, aggregate strategies, Doma CodeGen's `useMetamodel` setting for
 newly generated entity candidates, and runtime `Config` construction.
 
-### `doma-criteria-modification`
+### `doma-write-criteria-queries`
 
 Use this skill when writing or fixing Criteria API queries and statements with `QueryDsl` or Kotlin `KQueryDsl`:
 selects with joins, associations, projections, tuples, aggregates, subqueries, derived tables, and CTEs, plus
@@ -111,7 +111,7 @@ npx skills add momosetkn/doma-skills --skill doma-setup-kotlin-project
 npx skills add momosetkn/doma-skills --skill doma-connect-aws-rds
 npx skills add momosetkn/doma-skills --skill doma-sync-entities-from-database
 npx skills add momosetkn/doma-skills --skill doma-enable-criteria-metamodels
-npx skills add momosetkn/doma-skills --skill doma-criteria-modification
+npx skills add momosetkn/doma-skills --skill doma-write-criteria-queries
 ```
 
 ## Usage
@@ -137,11 +137,11 @@ Use $doma-enable-criteria-metamodels to generate metamodel classes for all of my
 ```
 
 ```text
-Use $doma-criteria-modification to select employees with their departments in one query and check the generated SQL.
+Use $doma-write-criteria-queries to select employees with their departments in one query and check the generated SQL.
 ```
 
 ```text
-Use $doma-criteria-modification to fix this KQueryDsl update that throws OptimisticLockException.
+Use $doma-write-criteria-queries to fix this KQueryDsl update that throws OptimisticLockException.
 ```
 
 ```text

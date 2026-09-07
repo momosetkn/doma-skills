@@ -55,7 +55,7 @@ Criteria API のクエリ記述、エンティティ・ドメイン・埋め込�
 DAO および 2-way SQL の生成、KSP、集約ストラテジー、生成するエンティティ候補に対する Doma CodeGen の
 `useMetamodel` 設定、実行時の `Config` の構築は対象外です。
 
-### `doma-criteria-modification`
+### `doma-write-criteria-queries`
 
 `QueryDsl` または Kotlin の `KQueryDsl` で Criteria API のクエリと文を記述・修正する場合にこのスキルを使用します。
 結合・関連付け・射影・タプル・集約関数・サブクエリ・導出テーブル・CTE を含む検索と、挿入・更新・削除・upsert・
@@ -90,7 +90,7 @@ npx skills add momosetkn/doma-skills --skill doma-setup-kotlin-project
 npx skills add momosetkn/doma-skills --skill doma-connect-aws-rds
 npx skills add momosetkn/doma-skills --skill doma-sync-entities-from-database
 npx skills add momosetkn/doma-skills --skill doma-enable-criteria-metamodels
-npx skills add momosetkn/doma-skills --skill doma-criteria-modification
+npx skills add momosetkn/doma-skills --skill doma-write-criteria-queries
 ```
 
 ## 使い方
@@ -116,11 +116,11 @@ Use $doma-enable-criteria-metamodels to generate metamodel classes for all of my
 ```
 
 ```text
-Use $doma-criteria-modification to select employees with their departments in one query and check the generated SQL.
+Use $doma-write-criteria-queries to select employees with their departments in one query and check the generated SQL.
 ```
 
 ```text
-Use $doma-criteria-modification to fix this KQueryDsl update that throws OptimisticLockException.
+Use $doma-write-criteria-queries to fix this KQueryDsl update that throws OptimisticLockException.
 ```
 
 ```text

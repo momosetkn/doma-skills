@@ -1,5 +1,5 @@
 ---
-name: doma-criteria-modification
+name: doma-write-criteria-queries
 description: Use when writing or fixing Doma Criteria API queries and statements with QueryDsl or Kotlin KQueryDsl - selects with joins, associations, projections, tuples, aggregates, subqueries, CTEs, and inserts, updates, deletes, upserts, batch and multi-row statements, returning clauses, optimistic locking, and empty-WHERE or silently-dropped-condition problems.
 ---
 
