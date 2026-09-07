@@ -19,7 +19,7 @@ Java examples assume `QueryDsl dsl = new QueryDsl(config);`; Kotlin examples ass
 | --- | --- | --- |
 | Identifies rows by | the entity's `@Id` | the WHERE condition you write |
 | `@Version` | initialized on insert; in the WHERE clause on update and delete; incremented by update only | untouched unless you set it yourself |
-| Failure on lost update | `OptimisticLockException` on update/delete when the count is 0 (`BatchOptimisticLockException` for batches); inserts never throw it | none |
+| Failure on lost update | `single` update/delete: `OptimisticLockException` when the count is 0; `batch` update/delete: `BatchOptimisticLockException` when exactly one affected row per entity cannot be verified; inserts never throw either | none |
 | Java result | `Result<ENTITY>`, `BatchResult<ENTITY>`, `MultiResult<ENTITY>` | `int` affected rows |
 | Kotlin result | same result objects via `execute()` | `Int` via `execute()` |
 
@@ -169,7 +169,7 @@ Department_ da = new Department_("DEPARTMENT_ARCHIVE");
 int count = dsl.insert(da).select(c -> c.from(d).where(cc -> cc.in(d.departmentId, List.of(1, 2)))).execute();
 ```
 
-Null right-hand values behave opposite to WHERE here: `values` and `set` have no null-drop, so `c.value(d.location, null)` binds NULL and writes it. Dropping the assignment requires not calling `value` for that property (`excludeNull` covers the entity forms). The `values` block itself accepts only plain values -- expressions and subqueries are for `set` in updates.
+Null right-hand values behave opposite to WHERE here: `values` and `set` have no null-drop, so `c.value(d.location, null)` binds NULL and writes it. Dropping the assignment requires not calling `value` for that property (`excludeNull` covers only the `single` insert and update forms). The `values` block itself accepts only plain values -- expressions and subqueries are for `set` in updates.
 
 A table name passed to a metamodel constructor is validated: quotes, semicolons, double hyphens, and comment sequences raise `DomaIllegalArgumentException`. Never build it from user input.
 
@@ -198,18 +198,20 @@ val many = dsl.insert(d).multi(departments).returning().fetch()
 
 ## Settings
 
-| Setting | insert | update | delete | Default | Effect |
-| --- | --- | --- | --- | --- | --- |
-| `comment` / `queryTimeout` / `sqlLogType` | yes | yes | yes | none / 0 / `FORMATTED` | SQL comment, JDBC timeout in seconds, log format |
-| `batchSize` | yes | yes | yes | 0 | rows per `executeBatch()` flush |
-| `excludeNull` | yes | yes | no | false | omits null properties from the statement |
-| `include` / `exclude` | yes | yes | no | empty | restricts the affected properties |
-| `ignoreGeneratedKeys` | yes | no | no | false | skips retrieving generated keys |
-| `allowEmptyWhere` | no | yes | yes | **false** | permits a statement with no condition |
-| `ignoreVersion` | no | yes | yes | false | drops `@Version` from the WHERE clause |
-| `suppressOptimisticLockException` | no | yes | yes | false | returns count 0 instead of throwing |
+A settings field existing on the settings class does not mean every statement form reads it. What each form actually passes to its query (verified per statement class):
 
-A `batchSize` or `queryTimeout` of 0 or below falls back to the same-named `Config` value at prepare time, so the per-statement setting only overrides the project-wide one. Note the `allowEmptyWhere` asymmetry: selects default to true, set-based updates and deletes default to false.
+| Setting | Default | Effect | Honored by |
+| --- | --- | --- | --- |
+| `comment` / `queryTimeout` / `sqlLogType` | none / 0 / `FORMATTED` | SQL comment, JDBC timeout in seconds, log format | every form |
+| `batchSize` | 0 | rows per `executeBatch()` flush | `batch` forms only |
+| `excludeNull` | false | omits null properties from the statement | `single` insert and `single` update only |
+| `include` / `exclude` | empty | restricts the affected properties | `single` insert, `multi` insert, `single` update; **batch forms reset them to empty** |
+| `ignoreGeneratedKeys` | false | skips retrieving generated keys | `batch` insert only |
+| `allowEmptyWhere` | **false** | permits a statement with no condition | set-based `update`/`delete` only |
+| `ignoreVersion` | false | drops `@Version` from the WHERE clause | `single` and `batch` update/delete |
+| `suppressOptimisticLockException` | false | skips the optimistic-lock check instead of throwing | `single` and `batch` update/delete |
+
+Setting an option a form does not honor is silently ignored -- `excludeNull` or `include`/`exclude` on a `batch`, for example, changes nothing. A `batchSize` or `queryTimeout` of 0 or below falls back to the same-named `Config` value at prepare time, so the per-statement setting only overrides the project-wide one. Note the `allowEmptyWhere` asymmetry: selects default to true, set-based updates and deletes default to false.
 
 Each row is a JavaBean-style property on the settings object: booleans and values use `setXxx` (`settings.setExcludeNull(true)`, `settings.setIgnoreVersion(true)`), while `include` and `exclude` are varargs methods without the `set` prefix. Doma's documentation shows `settings.excludeNull(true)` in one example; that form does not exist on the settings classes, so use `setExcludeNull`.
 

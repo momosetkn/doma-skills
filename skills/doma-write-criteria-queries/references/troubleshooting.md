@@ -37,16 +37,16 @@ The statement evaluated no condition and the form protects against it. Decide wh
 
 ## OptimisticLockException
 
-Thrown by entity-based `update` and `delete` when the entity has a `@Version` property and the update count is zero, which means another transaction changed or deleted the row. Batch statements throw the `BatchOptimisticLockException` subclass, so catch clauses on the base type cover both.
+Thrown by entity-based `update` and `delete` when the entity has a `@Version` property and the stored row no longer matches the entity's id/version/tenant conditions -- most commonly because another transaction changed or deleted it, but a stale version value or a tenant mismatch produces the same zero count. `single` statements throw on an affected count of 0; `batch` statements throw the `BatchOptimisticLockException` subclass whenever Doma cannot verify exactly one affected row per entity, so catch clauses on the base type cover both.
 
 1. Re-fetch the entity, re-apply the change, and retry, or report the conflict to the caller.
 2. Do not "fix" it by switching to a set-based `update(e).set(...).where(...)`. That removes the protection instead of handling the conflict.
-3. When a zero count is acceptable, set `suppressOptimisticLockException` and inspect the returned count.
+3. When a zero count is acceptable, set `suppressOptimisticLockException` and inspect the returned count(s) **before reusing the entity**: Doma still advances the local `@Version` during update completion even when the database did not update the expected row, so a suppressed miss leaves the in-memory entity one version ahead of the stored row.
 4. `ignoreVersion` drops the version from the WHERE clause entirely; use it only for deliberate administrative overwrites.
 
 ## UniqueConstraintException
 
-Raised by insert and update statements that violate a unique constraint. If the intent is upsert semantics, chain `onDuplicateKeyUpdate()` or `onDuplicateKeyIgnore()`, and with `values` supply `keys(...)` so the conflict target is explicit. Verify the generated SQL against the target database, because the emulation differs per dialect.
+Raised by insert and update statements that violate a unique constraint; batch statements throw the `BatchUniqueConstraintException` subclass, so the base type catches both. If the intent is upsert semantics, chain `onDuplicateKeyUpdate()` or `onDuplicateKeyIgnore()`, and with `values` supply `keys(...)` so the conflict target is explicit. Verify the generated SQL against the target database, because the emulation differs per dialect.
 
 ## NoSuchElementException in Kotlin
 
