@@ -18,8 +18,8 @@ Java examples assume `QueryDsl dsl = new QueryDsl(config);`; Kotlin examples ass
 | | Entity-based (`single`, `batch`; insert also `multi`) | Set-based (`values`, `select`, `set`, `where`, `all`) |
 | --- | --- | --- |
 | Identifies rows by | the entity's `@Id` | the WHERE condition you write |
-| `@Version` | initialized on insert; in WHERE and incremented on update/delete | untouched unless you set it yourself |
-| Failure on lost update | `OptimisticLockException` when the update count is 0 | none |
+| `@Version` | initialized on insert; in the WHERE clause on update and delete; incremented by update only | untouched unless you set it yourself |
+| Failure on lost update | `OptimisticLockException` on update/delete when the count is 0 (`BatchOptimisticLockException` for batches); inserts never throw it | none |
 | Java result | `Result<ENTITY>`, `BatchResult<ENTITY>`, `MultiResult<ENTITY>` | `int` affected rows |
 | Kotlin result | same result objects via `execute()` | `Int` via `execute()` |
 

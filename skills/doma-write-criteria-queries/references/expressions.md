@@ -106,18 +106,21 @@ Inside the `case` block the receiver is the Java `CaseExpression.Declaration`, s
 
 ## Column aliases
 
-`Expressions.alias(property, "NAME")` adds an alias to a column in the select clause. Doma recommends using it only in the `select` and `orderBy` of the projection family, which is where standard SQL accepts an alias:
+`Expressions.alias(property, "NAME")` adds an alias to a column in the select clause. Doma recommends using it only in the `select` and `orderBy` of the projection family, which is where standard SQL accepts an alias; the alias lets `orderBy` reference a computed column by name:
 
 ```java
-List<Tuple2<String, Long>> list = dsl
+AliasExpression<Salary> salarySum = Expressions.alias(sum(e.salary), "SALARY_SUM");
+
+List<Tuple2<Integer, Salary>> list = dsl
     .from(e)
-    .groupBy(e.departmentId)
-    .orderBy(c -> c.asc(alias(count(), "CNT")))
-    .select(alias(e.employeeName, "NAME"), alias(count(), "CNT"))
+    .innerJoin(d, c -> c.eq(e.departmentId, d.departmentId))
+    .groupBy(d.departmentId)
+    .orderBy(c -> c.asc(salarySum))
+    .select(d.departmentId, salarySum)
     .fetch();
 ```
 
-An alias is also what makes a derived-table subquery's columns line up with the entity that receives them. `KExpressions` has no `alias`; Kotlin code calls the Java `Expressions.alias` directly.
+Do **not** use `alias` to line up a derived-table subquery with its entity -- Doma aliases those columns to the outer entity's column names automatically, and a manual alias suppresses that (see [Select Queries](select-queries.md#subqueries-derived-tables-ctes)). `KExpressions` has no `alias`; Kotlin code calls the Java `Expressions.alias` directly.
 
 ## Subquery values
 

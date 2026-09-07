@@ -383,7 +383,7 @@ List<Employee> list = dsl
     .fetch();
 ```
 
-A derived table and a CTE each require an entity class, with a metamodel, whose properties match the subquery's select list. The match is checked at execution time: the subquery must select exactly as many columns as the outer entity has properties (DOMA6011 otherwise), and computed, literal, or union columns should be named with `Expressions.alias(expr, t.prop.getName())` so they line up with the outer entity's columns:
+A derived table and a CTE each require an entity class, with a metamodel, whose properties match the subquery's select list. The match is positional and checked at execution time: the subquery must select exactly as many columns as the outer entity has properties (DOMA6011 otherwise), and **Doma aliases each plain select item to the outer entity's actual column name automatically** -- computed columns, literals, and aggregates included. Do not alias them yourself: a manual `AliasExpression` suppresses the automatic alias, and `PropertyMetamodel.getName()` is the Java property name, not the column name, so `alias(expr, t.prop.getName())` breaks the mapping as soon as `@Column(name = ...)` diverges from the property name. Order the select list to match the entity's properties and let Doma name the columns:
 
 ```java
 NameAndAmount_ t = new NameAndAmount_();

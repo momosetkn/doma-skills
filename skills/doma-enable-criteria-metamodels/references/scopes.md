@@ -48,6 +48,8 @@ Every `@Scope` method must:
 - not be `static`;
 - take the entity metamodel as its first parameter.
 
+The scope class itself is instantiated by the generated metamodel as a plain `new ScopeClass()` field, and the annotation processor validates only the methods -- so the class also needs an accessible no-arg constructor and enough visibility to be referenced from the entity's package, or the *generated* metamodel fails to compile without any DOMA-numbered diagnostic.
+
 Additional parameters after the metamodel are allowed and become parameters of the generated method, including varargs, arrays, `List`, bounded wildcards, and generic type parameters.
 
 ## Compile-time diagnostics

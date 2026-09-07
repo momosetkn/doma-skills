@@ -37,7 +37,7 @@ The statement evaluated no condition and the form protects against it. Decide wh
 
 ## OptimisticLockException
 
-Thrown by entity-based `update` and `delete` when the entity has a `@Version` property and the update count is zero, which means another transaction changed or deleted the row.
+Thrown by entity-based `update` and `delete` when the entity has a `@Version` property and the update count is zero, which means another transaction changed or deleted the row. Batch statements throw the `BatchOptimisticLockException` subclass, so catch clauses on the base type cover both.
 
 1. Re-fetch the entity, re-apply the change, and retry, or report the conflict to the caller.
 2. Do not "fix" it by switching to a set-based `update(e).set(...).where(...)`. That removes the protection instead of handling the conflict.
@@ -86,7 +86,7 @@ The Criteria API reports statement-construction mistakes at execution time with 
 | DOMA6006 | Empty WHERE clause (`EmptyWhereClauseException`) | See [EmptyWhereClauseException](#emptywhereclauseexception) |
 | DOMA6007 / DOMA6008 | `selectTo`/`projectTo` given an entity not in the statement, or given an expression -- `sum`, `concat`, and other expressions are not supported there | Pass only the target entity's own property metamodels |
 | DOMA6009 | `select` given a property whose entity is not in the statement | Join that entity or select from the right metamodel |
-| DOMA6011 | Derived table: the subquery's select list has a different number of columns than the outer entity has properties | Make the counts match; alias computed columns with `Expressions.alias(expr, t.prop.getName())` |
+| DOMA6011 | Derived table: the subquery's select list has a different number of columns than the outer entity has properties | Make the counts and order match; Doma then aliases each column to the outer entity's column name automatically -- do not add manual aliases, which suppress that |
 | DOMA6012 / DOMA6013 | A property or entity type in the result mapping does not match | Re-check the metamodel instances used in `project`/`select` |
 
 ## Compilation cannot resolve the metamodel
