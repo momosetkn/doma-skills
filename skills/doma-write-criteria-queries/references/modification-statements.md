@@ -64,7 +64,7 @@ An empty list passed to `batch` or `multi` executes no SQL and returns an empty 
 Result<Department> result = dsl.insert(d).single(department).onDuplicateKeyUpdate().execute();
 ```
 
-On every entity form the upsert clause also accepts an explicit conflict target via `keys(...)`, and the single form keeps `returning()` after it:
+On every entity form the upsert clause also accepts an explicit conflict target via `keys(...)`. `single` and `multi` keep `returning()` after the upsert clause, with or without `keys(...)`; the batch form has no returning, as usual:
 
 ```java
 Department merged = dsl.insert(d)
@@ -75,7 +75,17 @@ Department merged = dsl.insert(d)
     .fetchOne();
 ```
 
-The update assignments of an entity-form upsert always come from the entity itself; only the `values` form takes an explicit `set(...)` block. In Kotlin, `KEntityqlUpsertStatement` exposes `returning()` and `execute()` but no `keys(...)` -- an upsert that must name its conflict target needs the `values` form or Java there.
+The update assignments of an entity-form upsert always come from the entity itself; only the `values` form takes an explicit `set(...)` block, and that block accepts exactly two right-hand shapes -- a plain value or `c.excluded(property)` -- not arbitrary expressions. In Kotlin, none of the entity upsert statements (`KEntityqlUpsertStatement`, `KEntityqlBatchUpsertStatement`, `KEntityqlMultiUpsertStatement`) exposes `keys(...)` -- an upsert that must name its conflict target needs the `values` form or Java there.
+
+Read the outcome from the result, because the returned entity is always your input object, never the stored row:
+
+- Update path: count 1 where the row was updated -- except MySQL and MariaDB, which report 2.
+- Ignore path: count 0 when the duplicate was skipped, 1 when the row was inserted.
+- To see the stored row itself (including what a duplicate-update produced), use `returning()`.
+
+An upsert is not an optimistic-locking statement: it performs no `@Version` check and never throws `OptimisticLockException`; the failure it converts is the `UniqueConstraintException` a plain insert would have thrown.
+
+Upsert SQL is assembled per dialect. The H2, SQL Server, MySQL/MariaDB, Oracle, PostgreSQL, and SQLite dialects implement it; a dialect without an implementation -- including `StandardDialect`, DB2, and HSQLDB -- throws `JdbcUnsupportedOperationException` at execution time.
 
 With `values`, the conflict target and the assignments can be stated explicitly, and `c.excluded(...)` refers to the proposed row:
 
@@ -99,7 +109,7 @@ int count = dsl
     .execute();
 ```
 
-When `keys(...)` is omitted, the conflict target defaults to the entity's ID properties; when `set(...)` is omitted on the `values` form, the update assigns every inserted value except the keys. Emulation of `INSERT ... ON CONFLICT` differs per database, so verify the generated SQL with `asSql()` against the target dialect -- and note the affected-row count: MySQL and MariaDB report 2 when the upsert updates an existing row, where other databases report 1.
+When `keys(...)` is omitted, the conflict target defaults to the entity's ID properties; when `set(...)` is omitted on the `values` form, the update assigns every inserted value except the keys. Emulation of `INSERT ... ON CONFLICT` differs per database, so verify the generated SQL with `asSql()` against the target dialect.
 
 ## Update
 
