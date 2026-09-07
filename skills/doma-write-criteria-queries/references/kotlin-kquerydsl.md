@@ -58,6 +58,9 @@ Use `KExpressions` where Java uses a statically imported `Expressions`. It carri
 
 ## Known gaps
 
+`KHavingDeclaration` carries only the comparison base (`eq`, `ne`, `ge`, `gt`, `le`, `lt`, `isNull`, `isNotNull`, `eqOrIsNull`, `neOrIsNotNull`, `and`, `or`, `not`, `extension`): `between`, `in`, `like`, and `exists` do not exist in a Kotlin `having` block, unlike Java's `HavingDeclaration` and unlike Kotlin's own `where` and join `on`. None of the Kotlin entity upsert statements exposes `keys(...)`.
+
+
 Generated `@Metamodel(scopes = ...)` methods return Java `Consumer<WhereDeclaration>` and similar types. As of Doma `3.14.0` the Kotlin declarations accept only Kotlin blocks and expose no `Consumer` overload, so scopes cannot be passed into a `KQueryDsl` clause. Express the shared condition as a Kotlin function that applies the block instead:
 
 ```kotlin

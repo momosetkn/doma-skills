@@ -122,7 +122,7 @@ val list = dsl.from(e).projectTo(e, e.employeeName).fetch()
 
 ## Where conditions
 
-Operators: `eq`, `ne`, `ge`, `gt`, `le`, `lt`, `isNull`, `isNotNull`, `like`, `notLike`, `between`, `in`, `notIn`, `exists`, `notExists`, plus `eqOrIsNull` and `neOrIsNotNull`. Logical operators: `and`, `or`, `not`.
+Operators: `eq`, `ne`, `ge`, `gt`, `le`, `lt`, `isNull`, `isNotNull`, `like`, `notLike`, `between`, `in`, `notIn`, `exists`, `notExists`, plus `eqOrIsNull` and `neOrIsNotNull`. Logical operators: `and`, `or`, `not`. The left operand is always a property metamodel; there is no value-on-the-left overload, so write `c.gt(e.salary, value)`, never the flipped form.
 
 ```java
 List<Employee> list = dsl
@@ -289,7 +289,7 @@ Association results are always fully buffered: after `associate`/`associateWith`
 
 ## Grouping and having
 
-`groupBy` takes property metamodels; when omitted, Doma infers the grouping from the select expression. Doma's documentation lists `eq`, `ne`, `ge`, `gt`, `le`, `lt` plus `and`, `or`, `not` for `having`; the declaration type shares WHERE's full comparison surface, and it is dynamic like WHERE.
+`groupBy` takes property metamodels; when omitted, Doma infers the grouping from the select expression. Doma's documentation lists `eq`, `ne`, `ge`, `gt`, `le`, `lt` plus `and`, `or`, `not` for `having`; Java's declaration type shares WHERE's full comparison surface, and it is dynamic like WHERE. Kotlin is narrower: `KHavingDeclaration` adds nothing to the comparison base, so `between`, `in`, `like`, and `exists` are unavailable in a Kotlin `having` block even though Kotlin's `where` and join `on` have them.
 
 Calling `groupBy` or `having` moves the statement into the projection family: the returned type no longer offers `associate`, `associateWith`, `project`, or `projectTo`, while `where`, `orderBy`, `limit`/`offset`, `distinct`, `forUpdate`, the `select` variants, `selectAsRow`, and `selectTo` remain available. Build entity graphs before grouping, or aggregate in a separate query.
 

@@ -51,7 +51,7 @@ int count = dsl.update(e)
 
 ## String functions
 
-`concat`, `lower`, `upper`, `trim`, `ltrim`, `rtrim`.
+`concat`, `lower`, `upper`, `trim`, `ltrim`, `rtrim`. `concat` takes the same three operand shapes as the arithmetic functions; the rest take a single property.
 
 ```java
 int count = dsl.update(e)
@@ -62,7 +62,7 @@ int count = dsl.update(e)
 
 ## Literals
 
-`literal` supports the basic data types and **embeds the value directly in the SQL instead of binding it**. Use it for constants that must appear in the SQL text, never for values that come from outside the program. `literal(String)` refuses a value containing a single quotation mark with `DomaIllegalArgumentException`, so a quote can never be smuggled into the SQL text.
+`literal` has exactly thirteen overloads -- `String`, `boolean`, `byte`, `short`, `int`, `long`, `float`, `double`, `BigDecimal`, `BigInteger`, `LocalDate`, `LocalDateTime`, and `LocalTime` -- and **embeds the value directly in the SQL instead of binding it**. There is no `literal` for a domain type, `java.util.Date`, `java.sql` types, `byte[]`, or `UUID`; compare such values through the binding operators instead (`c.eq(e.salary, new Salary("1000"))`). Use it for constants that must appear in the SQL text, never for values that come from outside the program. `literal(String)` refuses a value containing a single quotation mark with `DomaIllegalArgumentException`, so a quote can never be smuggled into the SQL text.
 
 ```java
 Employee employee = dsl.from(e).where(c -> c.eq(e.employeeId, literal(1))).fetchOne();
@@ -74,7 +74,7 @@ val employee = dsl.from(e).where { eq(e.employeeId, KExpressions.literal(1)) }.f
 
 ## CASE
 
-Java uses `when`; Kotlin cannot, because `when` is a keyword, so `KExpressions` names it `case`. The last argument is the ELSE value.
+Java uses `when`; Kotlin cannot, because `when` is a keyword, so `KExpressions` names it `case`. The last argument is the ELSE value. The WHEN declaration carries only `eq`, `ne`, `ge`, `gt`, `le`, `lt` (property-property and property-value forms), `isNull`, and `isNotNull` -- no `like`, `in`, `between`, `exists`, or logical nesting; a condition beyond that surface belongs in a user-defined expression.
 
 ```java
 List<String> list = dsl
