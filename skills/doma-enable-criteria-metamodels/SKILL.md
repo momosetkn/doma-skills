@@ -61,7 +61,7 @@ Instances are cheap and are created per query; two instances of the same metamod
 
 ## Boundary
 
-This skill covers only making metamodel classes exist and be named as intended. It excludes writing Criteria API queries and statements, entity, domain, and embeddable design, initial project and annotation-processor setup, DAO and two-way SQL generation, KSP, aggregate strategies and `@AssociationLinker`, and runtime `Config` construction. Choosing whether newly generated entity candidates carry the `metamodel` element -- the Doma CodeGen `useMetamodel` setting -- belongs to database-driven entity generation, not here; this skill works on entities that already exist in the project. Metamodels are generated for `@Entity` classes only; `@Domain` and `@Embeddable` classes never get one.
+This skill covers only making metamodel classes exist and be named as intended. It excludes writing Criteria API queries and statements, entity, domain, and embeddable design, initial project and annotation-processor setup, DAO and two-way SQL generation, KSP, aggregate strategies and `@AssociationLinker`, and runtime `Config` construction. Choosing whether newly generated entity candidates carry the `metamodel` element -- the Doma CodeGen `useMetamodel` setting -- belongs to database-driven entity generation, not here; this skill works on entities that already exist in the project. Only `@Entity` classes get a top-level `EntityMetamodel`. An `@Embeddable` class gets a nested property metamodel (`_X.Metamodel`) that is reachable only through an entity's metamodel, and a `@Domain` class gets no metamodel of its own.
 
 ## Version baseline
 

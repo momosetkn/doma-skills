@@ -24,7 +24,7 @@ Always start by printing the SQL. `stmt.asSql().getFormattedSql()` builds the st
 
 ## No rows came back
 
-1. Print the SQL and look for `in (null)`. An empty collection passed to `in` produces `in (null)`, which matches nothing, while a null collection would have dropped the predicate. Guard empty lists explicitly.
+1. Print the SQL and look for `in (null)` or `not in (null)`. An empty collection produces that form for both `in` and `notIn`, and **both match nothing** -- `not in (null)` is always UNKNOWN under three-valued logic, so an empty exclusion list filters out every row instead of keeping them. A null collection would have dropped the predicate instead. A null element inside a non-empty `notIn` list has the same effect. Guard empty and null-containing lists explicitly.
 2. Check that a joined entity's condition is not filtering the driving table through an inner join where a left join was intended.
 3. For tuple results, remember that an entity element is null when all its columns are null; that is an empty left-join match, not a mapping failure.
 

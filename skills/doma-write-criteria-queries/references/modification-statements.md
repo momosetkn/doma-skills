@@ -18,7 +18,7 @@ Java examples assume `QueryDsl dsl = new QueryDsl(config);`; Kotlin examples ass
 | | Entity-based (`single`, `batch`; insert also `multi`) | Set-based (`values`, `select`, `set`, `where`, `all`) |
 | --- | --- | --- |
 | Identifies rows by | the entity's `@Id` | the WHERE condition you write |
-| `@Version` | included in WHERE and incremented | untouched unless you set it yourself |
+| `@Version` | initialized on insert; in WHERE and incremented on update/delete | untouched unless you set it yourself |
 | Failure on lost update | `OptimisticLockException` when the update count is 0 | none |
 | Java result | `Result<ENTITY>`, `BatchResult<ENTITY>`, `MultiResult<ENTITY>` | `int` affected rows |
 | Kotlin result | same result objects via `execute()` | `Int` via `execute()` |
@@ -54,7 +54,7 @@ val multi = dsl.insert(d).multi(departments).execute()
 
 `batch` sends one statement per entity in a JDBC batch; `multi` sends a single `values (...), (...)` statement and exists only for insert. `multi` is dialect-gated at prepare time: a dialect without multi-row insert support fails with DOMA2236 (`Oracle11Dialect` is the one bundled dialect without it), and an entity whose ID is `GenerationType.IDENTITY` fails with DOMA2235 on the dialects that cannot auto-increment across a multi-row insert (SQL Server, Oracle 11, SQLite). `batch` has neither restriction, so it is the portable fallback. A unique constraint violation raises `UniqueConstraintException` unless an upsert clause handles it.
 
-Entity statements also give `asSql()` and `peek` execution-grade side effects: the prepare pipeline runs entity listeners, initializes `@Version`, and fetches a SEQUENCE- or TABLE-generated ID from the database. Only select and set-based statements build SQL purely.
+Entity statements also give `asSql()` and `peek` execution-grade side effects: the prepare pipeline runs the statement's entity listeners, and an entity insert additionally initializes `@Version` and fetches a SEQUENCE- or TABLE-generated ID from the database. Only select and set-based statements build SQL purely.
 
 An empty list passed to `batch` or `multi` executes no SQL and returns an empty result. When the entity's id generator cannot retrieve generated keys in a JDBC batch, Doma executes the statements one by one instead so the ids can still be read; the call looks batched but performs one round trip per entity. Set `ignoreGeneratedKeys` when the generated ids are not needed and real batching matters more.
 

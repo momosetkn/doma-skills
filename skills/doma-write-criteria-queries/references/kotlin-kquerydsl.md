@@ -53,7 +53,7 @@ Use `KExpressions` where Java uses a statically imported `Expressions`. It carri
 
 ## Naming collisions with Kotlin keywords
 
-- `in` and `notIn`: call `` `in` `` with backticks.
+- `in`: call `` `in` `` with backticks (`in` is a Kotlin keyword); `notIn` is a normal method.
 - `when`: named `case` on `KExpressions`.
 
 ## Known gaps
