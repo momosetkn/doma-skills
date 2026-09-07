@@ -36,7 +36,7 @@ List<Tuple2<Integer, Long>> perDepartment = dsl
 val perDepartment = dsl.from(e).select(e.departmentId, KExpressions.count()).fetch()
 ```
 
-When `groupBy` is omitted, the grouping is inferred from the select expression, so the two statements above generate the same SQL.
+When `groupBy` is omitted and a top-level projection item is an `AggregateFunction`, the remaining top-level items become the group keys, so the two statements above generate the same SQL. The detection does not see through wrappers: `alias(count(), "CNT")` is an `AliasExpression`, not an `AggregateFunction`, so an aliased aggregate needs an explicit `groupBy`.
 
 ## Arithmetic
 

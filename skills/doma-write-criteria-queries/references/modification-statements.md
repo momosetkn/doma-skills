@@ -30,7 +30,7 @@ Choose the family from the caller's intent, not from convenience. Replacing an e
 Entity statements run through Doma's auto queries, so they carry entity semantics that set-based statements never apply:
 
 - **Entity listeners.** `preInsert`, `preUpdate`, and `preDelete` hooks on the entity's listener run, and a listener may replace the entity instance. `values`/`set`/`where` statements invoke no listener.
-- **`@OriginalStates`.** When the entity holds original states, a `single` update puts only the properties that actually changed into the SET clause. If nothing changed -- or the entity has no updatable non-ID properties at all -- no UPDATE statement is issued, the result carries no counts, and no `OptimisticLockException` is raised. **`batch` updates do not do this**: every row in a JDBC batch must share one SQL statement, so a batch update always sets all updatable properties regardless of original states.
+- **`@OriginalStates`.** When the entity holds original states, a `single` update puts only the properties that actually changed into the SET clause. If nothing changed -- or the entity has no updatable non-ID properties at all -- no UPDATE statement is issued and no `OptimisticLockException` is raised: a `single` update returns a `Result` with `getCount()` 0, and a batch returns an empty `getCounts()` array. **`batch` updates do not do this**: every row in a JDBC batch must share one SQL statement, so a batch update always sets all updatable properties regardless of original states.
 - **`@GeneratedValue`.** Insert prepares id generation and populates the generated id on the returned entity (`result.getEntity()`).
 - **`@Version` initialization.** Entity insert sets the version to 1 when it is unset or below 0 (an explicitly set value above 0 is kept); set-based `values` inserts write exactly what you pass.
 - **`@TenantId`.** The tenant column is added to the WHERE clause of entity updates and deletes and is excluded from the SET clause. A set-based update or delete filters by the tenant only if you write that condition yourself, so a multi-tenant application must add it explicitly.
@@ -54,7 +54,7 @@ val multi = dsl.insert(d).multi(departments).execute()
 
 `batch` sends one statement per entity in a JDBC batch; `multi` sends a single `values (...), (...)` statement and exists only for insert. `multi` is dialect-gated at prepare time: a dialect without multi-row insert support fails with DOMA2236 (`Oracle11Dialect` is the one bundled dialect without it), and an entity whose ID is `GenerationType.IDENTITY` fails with DOMA2235 on the dialects that cannot auto-increment across a multi-row insert (SQL Server, Oracle 11, SQLite). `batch` has neither restriction, so it is the portable fallback. A unique constraint violation raises `UniqueConstraintException` unless an upsert clause handles it.
 
-Entity statements also give `asSql()` and `peek` execution-grade side effects: the prepare pipeline runs the statement's entity listeners, and an entity insert additionally initializes `@Version` and fetches a SEQUENCE- or TABLE-generated ID from the database. Only select and set-based statements build SQL purely.
+Entity statements also give `asSql()` and `peek` preparation-grade side effects: the prepare pipeline runs the statement's **pre**-listener (`preInsert`/`preUpdate`/`preDelete`; post-listeners only run on execution), and an entity insert additionally initializes `@Version` and consumes a SEQUENCE- or TABLE-generated ID, which touches the database whenever the id generator's allocation cache needs refilling. Only select and set-based statements build SQL purely.
 
 An empty list passed to `batch` or `multi` executes no SQL and returns an empty result. When the entity's id generator cannot retrieve generated keys in a JDBC batch, Doma executes the statements one by one instead so the ids can still be read; the call looks batched but performs one round trip per entity. Set `ignoreGeneratedKeys` when the generated ids are not needed and real batching matters more.
 
@@ -79,7 +79,7 @@ Department merged = dsl.insert(d)
 
 The update assignments of an entity-form upsert always come from the entity itself; only the `values` form takes an explicit `set(...)` block, and that block accepts exactly two right-hand shapes -- a plain value or `c.excluded(property)` -- not arbitrary expressions. In Kotlin, none of the entity upsert statements (`KEntityqlUpsertStatement`, `KEntityqlBatchUpsertStatement`, `KEntityqlMultiUpsertStatement`) exposes `keys(...)` -- an upsert that must name its conflict target needs the `values` form or Java there.
 
-Read the outcome from the result, because the returned entity is always your input object, never the stored row:
+Read the outcome from the result. The result entity is Doma's locally processed entity -- listener replacements, generated ids, and version changes applied -- never a row re-read from the database:
 
 - Update path: count 1 where the row was updated -- except MySQL and MariaDB, which report 2.
 - Ignore path: count 0 when the duplicate was skipped, 1 when the row was inserted.

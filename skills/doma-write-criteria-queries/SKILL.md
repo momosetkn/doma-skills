@@ -52,7 +52,7 @@ Sql<?> sql = stmt.asSql();
 System.out.println(sql.getFormattedSql());
 ```
 
-For selects and set-based statements, `asSql()` builds the SQL without touching the database, so it is the cheapest way to prove a dynamic condition survived. **Entity-based statements are different**: their `asSql()` (and `peek`, which calls it) runs the same prepare pipeline as execution -- the statement's entity listeners fire, and an entity insert additionally initializes `@Version` and fetches a SEQUENCE- or TABLE-generated ID from the database at that moment. Treat entity-statement `asSql()` as a dry run with side effects, not a pure formatter. Confirm in the printed SQL that every condition you intended is present, then execute.
+For selects and set-based statements, `asSql()` builds the SQL without touching the database, so it is the cheapest way to prove a dynamic condition survived. **Entity-based statements are different**: their `asSql()` (and `peek`, which calls it) runs the same prepare pipeline as execution -- the statement's **pre**-listener fires, and an entity insert additionally initializes `@Version` and consumes a SEQUENCE- or TABLE-generated ID (hitting the database when the allocation cache needs refilling). Treat entity-statement `asSql()` as a dry run with side effects, not a pure formatter. Confirm in the printed SQL that every condition you intended is present, then execute.
 
 ## When results or statements are wrong
 
