@@ -11,7 +11,7 @@ Make annotation processing and resource paths verifiable before adding applicati
 
 ## Boundary
 
-Use this skill only for initial setup in a plain Java Gradle or Maven project. Route Spring Boot, Quarkus, other framework integration, Kotlin with KAPT or KSP, advanced DAO or two-way SQL design, Criteria API, transaction configuration, and database migrations to guidance dedicated to those concerns. Do not imply that this setup workflow covers them or that a dedicated skill already exists.
+Use this skill only for initial setup in a plain Java Gradle or Maven project. Route Kotlin setup with KAPT to `doma-setup-kotlin-project`, and for the Criteria API route metamodel generation to `doma-enable-criteria-metamodels` and query and statement writing to `doma-write-criteria-queries`. Spring Boot, Quarkus, other framework integration, KSP, advanced DAO or two-way SQL design, transaction configuration, and database migrations are also out of scope, but no dedicated skill exists for them in this repository yet -- do not imply that one does.
 
 ## Workflow
 

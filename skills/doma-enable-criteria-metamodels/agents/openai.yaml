@@ -1,0 +1,4 @@
+interface:
+  display_name: "Enable Doma Criteria Metamodels"
+  short_description: "Generate and name Doma metamodel classes for the Criteria API"
+  default_prompt: "Use $doma-enable-criteria-metamodels to generate metamodel classes for my Doma entities so I can use the Criteria API."

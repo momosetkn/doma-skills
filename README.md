@@ -43,6 +43,39 @@ It covers Direct JDBC, IAM database authentication, Secrets Manager integration,
 
 AWS inspection is read-only and never retrieves or prints a secret value. The skill does not provision or mutate cloud resources. It excludes framework wiring and transactions, deployment, schema migrations, entity or business-DAO design, and slow-query or index tuning.
 
+### `doma-enable-criteria-metamodels`
+
+Use this skill when:
+
+- the Criteria API needs generated metamodel classes such as `Employee_`;
+- `@Metamodel` or the `doma.metamodel.enabled` option must be configured in a Java or Kotlin build;
+- metamodel class names need a prefix or suffix; or
+- a build produces no `*_` metamodel class, or fails with DOMA4455.
+
+It covers per-entity opt-in for Java and Kotlin, project-wide option wiring for Gradle, KAPT, Maven, and
+`doma.compile.config`, prefix and suffix precedence, `@Metamodel(scopes = ...)` scope class rules with their
+DOMA4457, DOMA4458, and DOMA4459 diagnostics, and generated-source verification.
+
+It excludes writing Criteria API queries, entity, domain, and embeddable design, initial project setup,
+DAO and two-way SQL generation, KSP, aggregate strategies, Doma CodeGen's `useMetamodel` setting for
+newly generated entity candidates, and runtime `Config` construction.
+
+### `doma-write-criteria-queries`
+
+Use this skill when writing or fixing Criteria API queries and statements with `QueryDsl` or Kotlin `KQueryDsl`:
+selects with joins, associations, projections, tuples, aggregates, subqueries, derived tables, and CTEs, plus
+inserts, updates, deletes, upserts, batch and multi-row statements, `returning` clauses, and optimistic locking.
+
+It covers statement-form selection, the rules that silently change results (a null right-hand operand drops the
+condition, an empty `in` list generates `in (null)`, entity-based versus set-based semantics, duplicate-removal
+differences between `select` and `project`), `EmptyWhereClauseException` and `OptimisticLockException` handling,
+`Expressions` and `KExpressions`, Java and Kotlin differences such as `fetchOne` versus `fetchOneOrNull`,
+dialect limits for `returning`, CTEs, and `forUpdate`, `asSql()` verification, and migration away from the classic
+Entityql and NativeSql DSLs.
+
+It excludes metamodel generation and naming, scope class definition, entity design, two-way SQL and DAO query
+annotations, aggregate strategies, stored procedures and functions, transactions, and schema migration.
+
 ### `doma-sync-entities-from-database`
 
 Use this skill when an existing Doma Gradle project must configure Doma CodeGen,
@@ -77,6 +110,8 @@ npx skills add momosetkn/doma-skills --skill doma-setup-project
 npx skills add momosetkn/doma-skills --skill doma-setup-kotlin-project
 npx skills add momosetkn/doma-skills --skill doma-connect-aws-rds
 npx skills add momosetkn/doma-skills --skill doma-sync-entities-from-database
+npx skills add momosetkn/doma-skills --skill doma-enable-criteria-metamodels
+npx skills add momosetkn/doma-skills --skill doma-write-criteria-queries
 ```
 
 ## Usage
@@ -95,6 +130,18 @@ Use $doma-setup-kotlin-project to add Doma and KAPT to this Kotlin/JVM Gradle pr
 
 ```text
 Use $doma-connect-aws-rds to inspect the existing Aurora PostgreSQL target in ap-northeast-1 and connect this Kotlin Doma Lambda through its existing RDS Proxy with IAM authentication.
+```
+
+```text
+Use $doma-enable-criteria-metamodels to generate metamodel classes for all of my entities and name them with a Q prefix.
+```
+
+```text
+Use $doma-write-criteria-queries to select employees with their departments in one query and check the generated SQL.
+```
+
+```text
+Use $doma-write-criteria-queries to fix this KQueryDsl update that throws OptimisticLockException.
 ```
 
 ```text

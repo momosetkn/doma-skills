@@ -38,6 +38,38 @@ Direct JDBC、IAM データベース認証、Secrets Manager 連携、既存の 
 
 AWS の調査は読み取り専用で、シークレットの値を取得したり出力したりすることはありません。クラウドリソースのプロビジョニングや変更も行いません。フレームワークの配線とトランザクション、デプロイ、スキーマのマイグレーション、エンティティや業務 DAO の設計、スロークエリやインデックスのチューニングは対象外です。
 
+### `doma-enable-criteria-metamodels`
+
+次のような場合にこのスキルを使用します。
+
+- Criteria API のために `Employee_` のようなメタモデルクラスを生成する
+- Java または Kotlin のビルドで `@Metamodel` または `doma.metamodel.enabled` オプションを設定する
+- メタモデルクラス名にプレフィックスやサフィックスを付ける
+- `*_` メタモデルクラスが生成されない、または DOMA4455 でビルドが失敗する原因を診断する
+
+このスキルは、Java と Kotlin それぞれのエンティティ単位でのオプトイン、Gradle・KAPT・Maven・`doma.compile.config`
+でのプロジェクト全体のオプション設定、プレフィックスとサフィックスの優先順位、`@Metamodel(scopes = ...)` の
+スコープクラスの規則と DOMA4457・DOMA4458・DOMA4459 の診断、生成ソースの確認を扱います。
+
+Criteria API のクエリ記述、エンティティ・ドメイン・埋め込みクラスの設計、初期プロジェクトセットアップ、
+DAO および 2-way SQL の生成、KSP、集約ストラテジー、生成するエンティティ候補に対する Doma CodeGen の
+`useMetamodel` 設定、実行時の `Config` の構築は対象外です。
+
+### `doma-write-criteria-queries`
+
+`QueryDsl` または Kotlin の `KQueryDsl` で Criteria API のクエリと文を記述・修正する場合にこのスキルを使用します。
+結合・関連付け・射影・タプル・集約関数・サブクエリ・導出テーブル・CTE を含む検索と、挿入・更新・削除・upsert・
+バッチおよび複数行文・`returning` 句・楽観ロックが対象です。
+
+このスキルは、文の形式の選択、結果を静かに変えてしまう規則（右辺が null の条件は消える、空リストの `in` は
+`in (null)` になる、エンティティに基づく文（single/batch/multi）と値・条件を直接指定する set-based の文（values/set/where）の意味の違い、`select` と `project` の重複除去の違い）、
+`EmptyWhereClauseException` と `OptimisticLockException` への対処、`Expressions` と `KExpressions`、
+`fetchOne` と `fetchOneOrNull` のような Java と Kotlin の差異、`returning`・CTE・`forUpdate` の方言上の制限、
+`asSql()` による確認、旧来の Entityql および NativeSql DSL からの移行を扱います。
+
+メタモデルの生成と命名、スコープクラスの定義、エンティティ設計、2-way SQL および DAO のクエリアノテーション、
+集約ストラテジー、ストアドプロシージャ・ファンクション、トランザクション、スキーママイグレーションは対象外です。
+
 ### `doma-sync-entities-from-database`
 
 既存の Doma Gradle プロジェクトで、Doma CodeGen を設定し、選択した PostgreSQL または MySQL のテーブルから Java または Kotlin のエンティティ候補を生成し、既存エンティティと構造的に比較して、手書きコードを上書きすることなくデータベースを正とする確実な変更だけを適用する場合にこのスキルを使用します。
@@ -57,6 +89,8 @@ npx skills add momosetkn/doma-skills --skill doma-setup-project
 npx skills add momosetkn/doma-skills --skill doma-setup-kotlin-project
 npx skills add momosetkn/doma-skills --skill doma-connect-aws-rds
 npx skills add momosetkn/doma-skills --skill doma-sync-entities-from-database
+npx skills add momosetkn/doma-skills --skill doma-enable-criteria-metamodels
+npx skills add momosetkn/doma-skills --skill doma-write-criteria-queries
 ```
 
 ## 使い方
@@ -75,6 +109,18 @@ Use $doma-setup-kotlin-project to add Doma and KAPT to this Kotlin/JVM Gradle pr
 
 ```text
 Use $doma-connect-aws-rds to inspect the existing Aurora PostgreSQL target in ap-northeast-1 and connect this Kotlin Doma Lambda through its existing RDS Proxy with IAM authentication.
+```
+
+```text
+Use $doma-enable-criteria-metamodels to generate metamodel classes for all of my entities and name them with a Q prefix.
+```
+
+```text
+Use $doma-write-criteria-queries to select employees with their departments in one query and check the generated SQL.
+```
+
+```text
+Use $doma-write-criteria-queries to fix this KQueryDsl update that throws OptimisticLockException.
 ```
 
 ```text

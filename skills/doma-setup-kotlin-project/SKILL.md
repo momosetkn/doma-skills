@@ -33,4 +33,4 @@ Make compile-time DAO generation verifiable before introducing a database, frame
 
 ## Boundary
 
-This skill covers only plain Kotlin/JVM Gradle Kotlin DSL setup. It excludes Maven, Java-only setup, Spring Boot, Quarkus, other framework integration, KSP configuration, external SQL resources and resource-directory configuration, entity/domain/embeddable design, Criteria API and KQueryDsl, transactions, migrations, and broad database-dialect guidance. Research KSP separately from current official sources before changing processors.
+This skill covers only plain Kotlin/JVM Gradle Kotlin DSL setup. It excludes Maven, Java-only setup, Spring Boot, Quarkus, other framework integration, KSP configuration, external SQL resources and resource-directory configuration, entity/domain/embeddable design, transactions, migrations, and broad database-dialect guidance. For the Criteria API, route metamodel generation to `doma-enable-criteria-metamodels` and `KQueryDsl` query and statement writing to `doma-write-criteria-queries`. Research KSP separately from current official sources before changing processors.

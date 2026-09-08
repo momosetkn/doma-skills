@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Doma Criteria API Queries and Statements"
+  short_description: "Build QueryDsl and KQueryDsl selects, inserts, updates, and deletes"
+  default_prompt: "Use $doma-write-criteria-queries to write this query with the Doma Criteria API and verify the generated SQL."
